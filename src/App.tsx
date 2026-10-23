@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -23,6 +23,9 @@ export default function App() {
   const [folderPath, setFolderPath] = useState("");
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+
+  // 選択中のアーティスト（null のときは全曲表示）
+  const [selectedArtist, setSelectedArtist] = useState<string | null>(null);
 
   // 右クリックメニューのState
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -63,8 +66,27 @@ export default function App() {
     return () => window.removeEventListener("click", handleClickOutside);
   }, [contextMenu.visible]);
 
+  // アーティスト一覧と各曲数の集計
+  const artistList = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const track of tracks) {
+      const artist = track.artist || "Unknown Artist";
+      counts.set(artist, (counts.get(artist) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, "ja"));
+  }, [tracks]);
+
+  // 選択中のアーティストで絞り込んだトラック一覧
+  const filteredTracks = useMemo(() => {
+    if (!selectedArtist) return tracks;
+    return tracks.filter((t) => (t.artist || "Unknown Artist") === selectedArtist);
+  }, [tracks, selectedArtist]);
+
+  // 仮想スクロールは filteredTracks を対象にする
   const rowVirtualizer = useVirtualizer({
-    count: tracks.length,
+    count: filteredTracks.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 28,
     overscan: 15,
@@ -186,7 +208,7 @@ export default function App() {
         overflow: "hidden",
       }}
     >
-      {/* 操作バー */}
+      {/* 1. 操作バー */}
       <div
         style={{
           flexShrink: 0,
@@ -227,99 +249,224 @@ export default function App() {
           {isScanning ? "スキャン中..." : "スキャン"}
         </button>
         <span style={{ fontSize: "12px", color: "#888" }}>
-          {tracks.length} トラック
+          {filteredTracks.length} / {tracks.length} トラック
         </span>
       </div>
 
-      {/* テーブルヘッダー */}
-      <div
-        style={{
-          flexShrink: 0,
-          display: "grid",
-          gridTemplateColumns: "3fr 2fr 2fr 70px",
-          padding: "6px 12px",
-          background: "#2d2d2d",
-          borderBottom: "1px solid #3c3c3c",
-          fontSize: "12px",
-          fontWeight: "bold",
-          color: "#aaa",
-        }}
-      >
-        <div>タイトル</div>
-        <div>アーティスト</div>
-        <div>アルバム</div>
-        <div style={{ textAlign: "right" }}>長さ</div>
-      </div>
-
-      {/* 仮想リストコンテナ */}
-      <div
-        ref={parentRef}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-          position: "relative",
-        }}
-      >
+      {/* 2. メイン領域（左: アーティスト一覧 / 右: トラックテーブル） */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+        {/* 左ペイン: アーティスト一覧 */}
         <div
           style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
-            width: "100%",
-            position: "relative",
+            width: "220px",
+            flexShrink: 0,
+            background: "#181818",
+            borderRight: "1px solid #2d2d2d",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
           }}
         >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const track = tracks[virtualRow.index];
-            const isPlaying = currentTrack?.id === track.id;
+          <div
+            style={{
+              padding: "6px 12px",
+              background: "#222222",
+              borderBottom: "1px solid #2d2d2d",
+              fontSize: "11px",
+              fontWeight: "bold",
+              color: "#888",
+              textTransform: "uppercase",
+              letterSpacing: "0.5px",
+            }}
+          >
+            アーティスト
+          </div>
 
-            return (
-              <div
-                key={track.id}
-                onDoubleClick={() => handlePlay(track)}
-                onContextMenu={(e) => handleContextMenu(e, track)}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
-                  display: "grid",
-                  gridTemplateColumns: "3fr 2fr 2fr 70px",
-                  alignItems: "center",
-                  padding: "0 12px",
-                  fontSize: "12px",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  background: isPlaying
-                    ? "#094771"
-                    : virtualRow.index % 2 === 0
-                    ? "#1e1e1e"
-                    : "#222222",
-                  color: isPlaying ? "#fff" : "#ccc",
-                  borderBottom: "1px solid #282828",
-                }}
-              >
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isPlaying ? "bold" : "normal" }}>
-                  {track.title}
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+            {/* 全てのアーティスト項目 */}
+            <div
+              onClick={() => setSelectedArtist(null)}
+              style={{
+                padding: "6px 12px",
+                fontSize: "12px",
+                cursor: "pointer",
+                background: selectedArtist === null ? "#094771" : "transparent",
+                color: selectedArtist === null ? "#fff" : "#ccc",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+              onMouseEnter={(e) => {
+                if (selectedArtist !== null) e.currentTarget.style.background = "#2a2d2e";
+              }}
+              onMouseLeave={(e) => {
+                if (selectedArtist !== null) e.currentTarget.style.background = "transparent";
+              }}
+            >
+              <span>すべてのアーティスト</span>
+              <span style={{ fontSize: "10px", color: selectedArtist === null ? "#ddd" : "#777" }}>
+                {tracks.length}
+              </span>
+            </div>
+
+            {/* 個別アーティストリスト */}
+            {artistList.map((item) => {
+              const isSelected = selectedArtist === item.name;
+              return (
+                <div
+                  key={item.name}
+                  onClick={() => setSelectedArtist(item.name)}
+                  style={{
+                    padding: "6px 12px",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                    background: isSelected ? "#094771" : "transparent",
+                    color: isSelected ? "#fff" : "#ccc",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isSelected) e.currentTarget.style.background = "#2a2d2e";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isSelected) e.currentTarget.style.background = "transparent";
+                  }}
+                >
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      marginRight: "6px",
+                    }}
+                    title={item.name}
+                  >
+                    {item.name}
+                  </span>
+                  <span style={{ fontSize: "10px", color: isSelected ? "#ddd" : "#777", flexShrink: 0 }}>
+                    {item.count}
+                  </span>
                 </div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>
-                  {track.artist}
-                </div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>
-                  {track.album}
-                </div>
-                <div style={{ textAlign: "right", color: isPlaying ? "#ddd" : "#888" }}>
-                  {formatDuration(track.duration)}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 右ペイン: トラック一覧テーブル */}
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {/* テーブルヘッダー */}
+          <div
+            style={{
+              flexShrink: 0,
+              display: "grid",
+              gridTemplateColumns: "3fr 2fr 2fr 70px",
+              padding: "6px 12px",
+              background: "#2d2d2d",
+              borderBottom: "1px solid #3c3c3c",
+              fontSize: "12px",
+              fontWeight: "bold",
+              color: "#aaa",
+            }}
+          >
+            <div>タイトル</div>
+            <div>アーティスト</div>
+            <div>アルバム</div>
+            <div style={{ textAlign: "right" }}>長さ</div>
+          </div>
+
+          {/* 仮想リストコンテナ */}
+          <div
+            ref={parentRef}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              overflowX: "hidden",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                height: `${rowVirtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const track = filteredTracks[virtualRow.index];
+                const isPlaying = currentTrack?.id === track.id;
+
+                return (
+                  <div
+                    key={track.id}
+                    onDoubleClick={() => handlePlay(track)}
+                    onContextMenu={(e) => handleContextMenu(e, track)}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                      display: "grid",
+                      gridTemplateColumns: "3fr 2fr 2fr 70px",
+                      alignItems: "center",
+                      padding: "0 12px",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      background: isPlaying
+                        ? "#094771"
+                        : virtualRow.index % 2 === 0
+                        ? "#1e1e1e"
+                        : "#222222",
+                      color: isPlaying ? "#fff" : "#ccc",
+                      borderBottom: "1px solid #282828",
+                    }}
+                  >
+                    <div
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontWeight: isPlaying ? "bold" : "normal",
+                      }}
+                    >
+                      {track.title}
+                    </div>
+                    <div
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        color: isPlaying ? "#ddd" : "#999",
+                      }}
+                    >
+                      {track.artist}
+                    </div>
+                    <div
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        color: isPlaying ? "#ddd" : "#999",
+                      }}
+                    >
+                      {track.album}
+                    </div>
+                    <div style={{ textAlign: "right", color: isPlaying ? "#ddd" : "#888" }}>
+                      {formatDuration(track.duration)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* 下部ステータスバー */}
+      {/* 3. 下部ステータスバー */}
       <div
         style={{
           flexShrink: 0,
@@ -334,7 +481,8 @@ export default function App() {
       >
         {currentTrack ? (
           <div>
-            再生中: <strong>{currentTrack.title}</strong> - {currentTrack.artist} ({formatDuration(currentTrack.duration)})
+            再生中: <strong>{currentTrack.title}</strong> - {currentTrack.artist} (
+            {formatDuration(currentTrack.duration)})
           </div>
         ) : (
           <div style={{ color: "#666" }}>停止中</div>
@@ -439,14 +587,24 @@ export default function App() {
               </span>
             </div>
 
-            <form onSubmit={handleSaveTags} style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+            <form
+              onSubmit={handleSaveTags}
+              style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}
+            >
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>タイトル</label>
                 <input
                   type="text"
                   value={editForm.title}
                   onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
+                  style={{
+                    padding: "6px 8px",
+                    background: "#3c3c3c",
+                    border: "1px solid #555",
+                    color: "#fff",
+                    borderRadius: "3px",
+                    fontSize: "13px",
+                  }}
                   required
                 />
               </div>
@@ -457,7 +615,14 @@ export default function App() {
                   type="text"
                   value={editForm.artist}
                   onChange={(e) => setEditForm({ ...editForm, artist: e.target.value })}
-                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
+                  style={{
+                    padding: "6px 8px",
+                    background: "#3c3c3c",
+                    border: "1px solid #555",
+                    color: "#fff",
+                    borderRadius: "3px",
+                    fontSize: "13px",
+                  }}
                   required
                 />
               </div>
@@ -468,7 +633,14 @@ export default function App() {
                   type="text"
                   value={editForm.album}
                   onChange={(e) => setEditForm({ ...editForm, album: e.target.value })}
-                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
+                  style={{
+                    padding: "6px 8px",
+                    background: "#3c3c3c",
+                    border: "1px solid #555",
+                    color: "#fff",
+                    borderRadius: "3px",
+                    fontSize: "13px",
+                  }}
                   required
                 />
               </div>
@@ -481,14 +653,28 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setEditingTrack(null)}
-                  style={{ padding: "6px 14px", background: "#3c3c3c", border: "1px solid #555", color: "#ccc", borderRadius: "3px", cursor: "pointer" }}
+                  style={{
+                    padding: "6px 14px",
+                    background: "#3c3c3c",
+                    border: "1px solid #555",
+                    color: "#ccc",
+                    borderRadius: "3px",
+                    cursor: "pointer",
+                  }}
                 >
                   キャンセル
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  style={{ padding: "6px 16px", background: "#0e639c", border: "none", color: "#fff", borderRadius: "3px", cursor: "pointer" }}
+                  style={{
+                    padding: "6px 16px",
+                    background: "#0e639c",
+                    border: "none",
+                    color: "#fff",
+                    borderRadius: "3px",
+                    cursor: "pointer",
+                  }}
                 >
                   {isSaving ? "保存中..." : "保存"}
                 </button>
