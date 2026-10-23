@@ -28,9 +28,100 @@ interface ScanProgressPayload {
 }
 
 type ViewMode = "album_artist" | "artist" | "album";
-type MainViewMode = "albums" | "table"; // ← アルバムビュー / テーブルビュー
+type MainViewMode = "albums" | "table";
 type SortTarget = "name" | "count";
 type SortOrder = "asc" | "desc";
+
+// アルバムアート表示用コンポーネント（正方形トリミング）
+function AlbumCover({
+  filePath,
+  albumTitle,
+}: {
+  filePath: string;
+  albumTitle: string;
+}) {
+  const [artUrl, setArtUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    invoke<string | null>("get_album_art", {
+      filePath,
+      albumName: albumTitle,
+    })
+      .then((res) => {
+        if (isMounted) setArtUrl(res);
+      })
+      .catch(() => {
+        if (isMounted) setArtUrl(null);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [filePath, albumTitle]);
+
+  return (
+    <div
+      style={{
+        width: "140px",
+        height: "140px",
+        aspectRatio: "1 / 1",
+        flexShrink: 0,
+        background: "#25272b",
+        border: "1px solid #3c3c3c",
+        borderRadius: "4px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 4px 10px rgba(0,0,0,0.5)",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {artUrl ? (
+        <img
+          src={artUrl}
+          alt={albumTitle}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            display: "block",
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            width: "100%",
+            height: "100%",
+            padding: "8px",
+            boxSizing: "border-box",
+          }}
+        >
+          <span style={{ fontSize: "36px", opacity: 0.25 }}>💿</span>
+          <span
+            style={{
+              fontSize: "10px",
+              color: "#888",
+              textAlign: "center",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              width: "100%",
+              marginTop: "4px",
+            }}
+          >
+            {albumTitle}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -41,25 +132,21 @@ export default function App() {
   const [isSeeking, setIsSeeking] = useState(false);
   const [volume, setVolume] = useState(1);
 
-  // バックグラウンドスキャン状態
+  // バックグラウンドスキャン
   const [isScanning, setIsScanning] = useState(false);
   const [scannedCount, setScannedCount] = useState(0);
 
-  // 左ペイン表示モード切り替え
+  // 表示モード
   const [viewMode, setViewMode] = useState<ViewMode>("album_artist");
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
-
-  // メイン画面の表示ビュー切り替え（初期値: アルバムビュー）
   const [mainViewMode, setMainViewMode] = useState<MainViewMode>("albums");
 
-  // ソート状態
+  // ソート
   const [sortTarget, setSortTarget] = useState<SortTarget>("name");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
 
-  // 選択中のキー
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-
   // 選択管理
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
 
@@ -71,7 +158,7 @@ export default function App() {
     targetTrack: null,
   });
 
-  // タグ編集モーダル用
+  // タグ編集モーダル
   const [isEditing, setIsEditing] = useState(false);
   const [editingTracks, setEditingTracks] = useState<Track[]>([]);
   const [editForm, setEditForm] = useState({
@@ -111,7 +198,6 @@ export default function App() {
     };
   }, []);
 
-  // アルバムアーティスト / アーティスト / アルバム一覧の集計とソート
   const paneItems = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
@@ -143,7 +229,6 @@ export default function App() {
     return items;
   }, [tracks, viewMode, sortTarget, sortOrder]);
 
-  // モード切り替え時やデータ読み込み時に先頭項目を自動選択
   useEffect(() => {
     if (paneItems.length > 0) {
       if (!selectedKey || !paneItems.some((item) => item.name === selectedKey)) {
@@ -154,7 +239,6 @@ export default function App() {
     }
   }, [paneItems, selectedKey]);
 
-  // 選択中のキーで絞り込み
   const filteredTracks = useMemo(() => {
     if (!selectedKey) return [];
     return tracks.filter((t) => {
@@ -170,7 +254,6 @@ export default function App() {
     });
   }, [tracks, selectedKey, viewMode]);
 
-  // ★ アルバムごとにグルーピングしたデータ構造の生成
   const groupedAlbums = useMemo(() => {
     const map = new Map<string, Track[]>();
     for (const track of filteredTracks) {
@@ -182,7 +265,6 @@ export default function App() {
     }
 
     return Array.from(map.entries()).map(([albumTitle, albumTracks]) => {
-      // トラック番号順にソート（なければタイトル順）
       albumTracks.sort((a, b) => {
         if (a.track_number && b.track_number) return a.track_number - b.track_number;
         return a.title.localeCompare(b.title, "ja");
@@ -201,7 +283,6 @@ export default function App() {
     });
   }, [filteredTracks]);
 
-  // 再生位置ポーリング
   useEffect(() => {
     if (!isPlaying || isSeeking) return;
     const interval = setInterval(async () => {
@@ -224,7 +305,6 @@ export default function App() {
     return () => window.removeEventListener("click", handleClickOutside);
   }, [contextMenu.visible, isViewMenuOpen]);
 
-  // テーブルビュー用の仮想スクロール
   const rowVirtualizer = useVirtualizer({
     count: filteredTracks.length,
     getScrollElement: () => parentRef.current,
@@ -490,7 +570,7 @@ export default function App() {
           {isScanning ? `スキャン中 (${scannedCount} 件)...` : "スキャン"}
         </button>
 
-        {/* メイン画面の表示切り替えタブボタン */}
+        {/* 表示ビュー切り替えボタン */}
         <div style={{ display: "flex", background: "#181818", padding: "2px", borderRadius: "4px", gap: "2px", border: "1px solid #3c3c3c" }}>
           <button
             onClick={() => setMainViewMode("albums")}
@@ -530,7 +610,7 @@ export default function App() {
 
       {/* 2. メイン領域 */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-        {/* 左ペイン: 切り替え対応一覧 */}
+        {/* 左ペイン: 一覧 */}
         <div
           style={{
             width: "230px",
@@ -543,7 +623,6 @@ export default function App() {
             position: "relative",
           }}
         >
-          {/* ペインヘッダー */}
           <div
             onClick={(e) => {
               e.stopPropagation();
@@ -571,7 +650,6 @@ export default function App() {
             <span style={{ fontSize: "9px", color: "#777" }}>▾</span>
           </div>
 
-          {/* 切り替え＆ソート ドロップダウンメニュー */}
           {isViewMenuOpen && (
             <div
               onClick={(e) => e.stopPropagation()}
@@ -720,7 +798,6 @@ export default function App() {
             </div>
           )}
 
-          {/* 左ペイン アイテムリスト */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
             {paneItems.map((item) => {
               const isSelected = selectedKey === item.name;
@@ -769,9 +846,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* 右ペイン: 表示モードに応じて切り替え */}
+        {/* 右ペイン */}
         {mainViewMode === "albums" ? (
-          /* ★ MusicBee風「アルバムとトラック」ビュー */
           <div
             style={{
               flex: 1,
@@ -792,45 +868,14 @@ export default function App() {
                   alignItems: "flex-start",
                 }}
               >
-                {/* 左: アルバムジャケット画像枠 */}
-                <div
-                  style={{
-                    width: "140px",
-                    height: "140px",
-                    flexShrink: 0,
-                    background: "#282a2e",
-                    border: "1px solid #3c3c3c",
-                    borderRadius: "4px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    boxShadow: "0 4px 10px rgba(0,0,0,0.5)",
-                    position: "relative",
-                    overflow: "hidden",
-                  }}
-                >
-                  <span style={{ fontSize: "40px", opacity: 0.25 }}>💿</span>
-                  <span
-                    style={{
-                      position: "absolute",
-                      bottom: "4px",
-                      left: "4px",
-                      right: "4px",
-                      fontSize: "10px",
-                      color: "#888",
-                      textAlign: "center",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {group.albumTitle}
-                  </span>
-                </div>
+                {/* カバー画像 */}
+                <AlbumCover
+                  filePath={group.tracks[0]?.file_path || ""}
+                  albumTitle={group.albumTitle}
+                />
 
-                {/* 右: アルバム詳細 ＆ トラックリスト */}
+                {/* アルバム情報・トラックリスト */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  {/* アルバムヘッダー */}
                   <div
                     style={{
                       borderBottom: "1px solid #333",
@@ -863,7 +908,6 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* アルバムに属する曲のリスト */}
                   <div style={{ display: "flex", flexDirection: "column" }}>
                     {group.tracks.map((t, idx) => {
                       const isThisTrack = currentTrack?.id === t.id;
@@ -899,22 +943,18 @@ export default function App() {
                             if (!isSelected && !isThisTrack) e.currentTarget.style.background = "transparent";
                           }}
                         >
-                          {/* トラック番号 */}
                           <div style={{ color: "#777", fontSize: "11px" }}>
                             {isThisTrack ? (isPlaying ? "▶" : "❚❚") : (t.track_number ? String(t.track_number).padStart(2, "0") : String(idx + 1).padStart(2, "0"))}
                           </div>
 
-                          {/* タイトル */}
                           <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isThisTrack ? "bold" : "normal" }}>
                             {t.title}
                           </div>
 
-                          {/* 評価星マーク（MusicBee風ダミー） */}
                           <div style={{ color: "#555", fontSize: "10px", letterSpacing: "1px" }}>
                             ★★★★
                           </div>
 
-                          {/* 長さ */}
                           <div style={{ textAlign: "right", color: "#888", fontVariantNumeric: "tabular-nums" }}>
                             {formatDuration(t.duration)}
                           </div>
@@ -927,7 +967,7 @@ export default function App() {
             ))}
           </div>
         ) : (
-          /* 従来のフラットなトラック一覧テーブル */
+          /* テーブルビュー */
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div
               style={{

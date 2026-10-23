@@ -1,3 +1,4 @@
+use base64::prelude::*;
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
@@ -5,8 +6,9 @@ use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagItem};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::fs::{create_dir_all, File};
+use std::fs::{self, create_dir_all, File};
 use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -361,6 +363,105 @@ fn update_track_tags(
     Ok(())
 }
 
+// アルバムカバー取得（優先順位つき）
+#[tauri::command]
+fn get_album_art(file_path: String, album_name: String) -> Result<Option<String>, String> {
+    let p = Path::new(&file_path);
+
+    // 優先度 1: 音楽ファイル内部に埋め込まれた画像
+    if let Ok(tagged_file) = Probe::open(p).and_then(|pr| pr.read()) {
+        let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+        if let Some(t) = tag {
+            if let Some(pic) = t.pictures().first() {
+                let mime = match pic.mime_type() {
+                    Some(m) => m.as_str(),
+                    None => "image/jpeg",
+                };
+                let base64_str = BASE64_STANDARD.encode(pic.data());
+                return Ok(Some(format!("data:{};base64,{}", mime, base64_str)));
+            }
+        }
+    }
+
+    let parent_dir = match p.parent() {
+        Some(dir) => dir,
+        None => return Ok(None),
+    };
+
+    let entries = match fs::read_dir(parent_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+
+    let mut album_match: Option<std::path::PathBuf> = None;
+    let mut image_match: Option<std::path::PathBuf> = None;
+    let mut any_image_match: Option<std::path::PathBuf> = None;
+
+    let target_album = album_name.trim().to_lowercase();
+    let img_exts = ["jpg", "jpeg", "png", "webp"];
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let entry_path = entry.path();
+        if !entry_path.is_file() {
+            continue;
+        }
+
+        let ext = entry_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !img_exts.contains(&ext.as_str()) {
+            continue;
+        }
+
+        let stem = entry_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        // 優先度 2: [アルバム名] と付いた画像
+        if !target_album.is_empty() && stem.contains(&target_album) && album_match.is_none() {
+            album_match = Some(entry_path.clone());
+        }
+
+        // 優先度 3: image と付いた画像
+        if stem.contains("image") && image_match.is_none() {
+            image_match = Some(entry_path.clone());
+        }
+
+        // 優先度 4: 同ディレクトリの画像ファイル
+        if any_image_match.is_none() {
+            any_image_match = Some(entry_path);
+        }
+    }
+
+    let chosen_path = album_match.or(image_match).or(any_image_match);
+
+    if let Some(target_file) = chosen_path {
+        if let Ok(data) = fs::read(&target_file) {
+            let ext = target_file
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("jpeg")
+                .to_lowercase();
+            let mime = if ext == "png" {
+                "image/png"
+            } else if ext == "webp" {
+                "image/webp"
+            } else {
+                "image/jpeg"
+            };
+            let base64_str = BASE64_STANDARD.encode(&data);
+            return Ok(Some(format!("data:{};base64,{}", mime, base64_str)));
+        }
+    }
+
+    Ok(None)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (stream, stream_handle) =
@@ -433,6 +534,7 @@ pub fn run() {
             update_track_tags,
             get_playback_position,
             seek_track,
+            get_album_art,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
