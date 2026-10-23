@@ -120,7 +120,6 @@ export default function App() {
     }
   };
 
-  // タグ編集ウィンドウを開く
   const handleOpenEditModal = () => {
     if (!contextMenu.track) return;
     setEditingTrack(contextMenu.track);
@@ -132,7 +131,6 @@ export default function App() {
     setContextMenu((prev) => ({ ...prev, visible: false }));
   };
 
-  // タグの保存実行
   const handleSaveTags = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTrack) return;
@@ -147,7 +145,6 @@ export default function App() {
         album: editForm.album,
       });
 
-      // 画面のトラック配列も更新
       setTracks((prev) =>
         prev.map((t) =>
           t.id === editingTrack.id
@@ -156,7 +153,6 @@ export default function App() {
         )
       );
 
-      // 現在再生中の曲が編集対象ならそれも更新
       if (currentTrack?.id === editingTrack.id) {
         setCurrentTrack((prev) =>
           prev ? { ...prev, title: editForm.title, artist: editForm.artist, album: editForm.album } : null
@@ -178,28 +174,77 @@ export default function App() {
   };
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", fontFamily: "Segoe UI, sans-serif", background: "#1e1e1e", color: "#ddd" }}>
+    <div
+      style={{
+        height: "100vh",
+        width: "100vw",
+        display: "flex",
+        flexDirection: "column",
+        fontFamily: "Segoe UI, sans-serif",
+        background: "#1e1e1e",
+        color: "#ddd",
+        overflow: "hidden",
+      }}
+    >
       {/* 操作バー */}
-      <div style={{ padding: "8px 12px", background: "#252526", borderBottom: "1px solid #333", display: "flex", gap: "8px", alignItems: "center" }}>
+      <div
+        style={{
+          flexShrink: 0,
+          padding: "8px 12px",
+          background: "#252526",
+          borderBottom: "1px solid #333",
+          display: "flex",
+          gap: "8px",
+          alignItems: "center",
+        }}
+      >
         <input
           type="text"
           placeholder="絶対パスを入力 (例: D:\Music)"
           value={folderPath}
           onChange={(e) => setFolderPath(e.target.value)}
-          style={{ flex: 1, padding: "4px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px" }}
+          style={{
+            flex: 1,
+            padding: "4px 8px",
+            background: "#3c3c3c",
+            border: "1px solid #555",
+            color: "#fff",
+            borderRadius: "3px",
+          }}
         />
         <button
           onClick={handleScan}
           disabled={isScanning}
-          style={{ padding: "4px 12px", background: "#0e639c", color: "#fff", border: "none", borderRadius: "3px", cursor: "pointer" }}
+          style={{
+            padding: "4px 12px",
+            background: "#0e639c",
+            color: "#fff",
+            border: "none",
+            borderRadius: "3px",
+            cursor: "pointer",
+          }}
         >
           {isScanning ? "スキャン中..." : "スキャン"}
         </button>
-        <span style={{ fontSize: "12px", color: "#888" }}>{tracks.length} トラック</span>
+        <span style={{ fontSize: "12px", color: "#888" }}>
+          {tracks.length} トラック
+        </span>
       </div>
 
       {/* テーブルヘッダー */}
-      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr 2fr 70px", padding: "6px 12px", background: "#2d2d2d", borderBottom: "1px solid #3c3c3c", fontSize: "12px", fontWeight: "bold", color: "#aaa" }}>
+      <div
+        style={{
+          flexShrink: 0,
+          display: "grid",
+          gridTemplateColumns: "3fr 2fr 2fr 70px",
+          padding: "6px 12px",
+          background: "#2d2d2d",
+          borderBottom: "1px solid #3c3c3c",
+          fontSize: "12px",
+          fontWeight: "bold",
+          color: "#aaa",
+        }}
+      >
         <div>タイトル</div>
         <div>アーティスト</div>
         <div>アルバム</div>
@@ -207,8 +252,23 @@ export default function App() {
       </div>
 
       {/* 仮想リストコンテナ */}
-      <div ref={parentRef} style={{ flex: 1, overflowY: "auto", position: "relative" }}>
-        <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, width: "100%", position: "relative" }}>
+      <div
+        ref={parentRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+          position: "relative",
+        }}
+      >
+        <div
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: "100%",
+            position: "relative",
+          }}
+        >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const track = tracks[virtualRow.index];
             const isPlaying = currentTrack?.id === track.id;
@@ -232,15 +292,27 @@ export default function App() {
                   fontSize: "12px",
                   cursor: "pointer",
                   userSelect: "none",
-                  background: isPlaying ? "#094771" : virtualRow.index % 2 === 0 ? "#1e1e1e" : "#222222",
+                  background: isPlaying
+                    ? "#094771"
+                    : virtualRow.index % 2 === 0
+                    ? "#1e1e1e"
+                    : "#222222",
                   color: isPlaying ? "#fff" : "#ccc",
                   borderBottom: "1px solid #282828",
                 }}
               >
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isPlaying ? "bold" : "normal" }}>{track.title}</div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>{track.artist}</div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>{track.album}</div>
-                <div style={{ textAlign: "right", color: isPlaying ? "#ddd" : "#888" }}>{formatDuration(track.duration)}</div>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isPlaying ? "bold" : "normal" }}>
+                  {track.title}
+                </div>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>
+                  {track.artist}
+                </div>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>
+                  {track.album}
+                </div>
+                <div style={{ textAlign: "right", color: isPlaying ? "#ddd" : "#888" }}>
+                  {formatDuration(track.duration)}
+                </div>
               </div>
             );
           })}
@@ -248,7 +320,18 @@ export default function App() {
       </div>
 
       {/* 下部ステータスバー */}
-      <div style={{ padding: "8px 16px", background: "#181818", borderTop: "1px solid #2d2d2d", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div
+        style={{
+          flexShrink: 0,
+          padding: "8px 16px",
+          background: "#181818",
+          borderTop: "1px solid #2d2d2d",
+          fontSize: "12px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
         {currentTrack ? (
           <div>
             再生中: <strong>{currentTrack.title}</strong> - {currentTrack.artist} ({formatDuration(currentTrack.duration)})
@@ -335,7 +418,6 @@ export default function App() {
               overflow: "hidden",
             }}
           >
-            {/* ウィンドウヘッダー */}
             <div
               style={{
                 padding: "10px 16px",
@@ -357,7 +439,6 @@ export default function App() {
               </span>
             </div>
 
-            {/* 入力フォーム */}
             <form onSubmit={handleSaveTags} style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>タイトル</label>
@@ -396,7 +477,6 @@ export default function App() {
                 ファイル: {editingTrack.file_path}
               </div>
 
-              {/* ボタングループ */}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
                 <button
                   type="button"
