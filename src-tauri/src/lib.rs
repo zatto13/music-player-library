@@ -1,7 +1,7 @@
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, Tag, TagExt}; // TagExt を追加
+use lofty::tag::{Accessor, Tag, TagExt};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ pub struct Track {
 pub struct AudioPlayer {
     stream_handle: OutputStreamHandle,
     sink: Mutex<Option<Sink>>,
+    volume: Mutex<f32>,
 }
 
 pub struct AppState {
@@ -136,10 +137,65 @@ fn play_track(state: State<AppState>, file_path: String) -> Result<(), String> {
     let mut sink_lock = state.player.sink.lock().map_err(|e| e.to_string())?;
 
     let sink = Sink::try_new(&state.player.stream_handle).map_err(|e| e.to_string())?;
+    let current_vol = *state.player.volume.lock().map_err(|e| e.to_string())?;
+    sink.set_volume(current_vol);
+
     sink.append(source);
     sink.play();
 
     *sink_lock = Some(sink);
+    Ok(())
+}
+
+#[tauri::command]
+fn toggle_play_pause(state: State<AppState>) -> Result<bool, String> {
+    let sink_lock = state.player.sink.lock().map_err(|e| e.to_string())?;
+    if let Some(sink) = sink_lock.as_ref() {
+        if sink.is_paused() {
+            sink.play();
+            Ok(true)
+        } else {
+            sink.pause();
+            Ok(false)
+        }
+    } else {
+        Ok(false)
+    }
+}
+
+use std::time::Duration;
+
+// 現在の再生位置（秒）を取得
+#[tauri::command]
+fn get_playback_position(state: State<AppState>) -> Result<f32, String> {
+    let sink_lock = state.player.sink.lock().map_err(|e| e.to_string())?;
+    if let Some(sink) = sink_lock.as_ref() {
+        Ok(sink.get_pos().as_secs_f32())
+    } else {
+        Ok(0.0)
+    }
+}
+
+// 指定した秒数へシーク
+#[tauri::command]
+fn seek_track(state: State<AppState>, position_secs: f32) -> Result<(), String> {
+    let sink_lock = state.player.sink.lock().map_err(|e| e.to_string())?;
+    if let Some(sink) = sink_lock.as_ref() {
+        let _ = sink.try_seek(Duration::from_secs_f32(position_secs));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_volume(state: State<AppState>, volume: f32) -> Result<(), String> {
+    let mut vol_lock = state.player.volume.lock().map_err(|e| e.to_string())?;
+    *vol_lock = volume.clamp(0.0, 1.0);
+
+    let sink_lock = state.player.sink.lock().map_err(|e| e.to_string())?;
+    if let Some(sink) = sink_lock.as_ref() {
+        sink.set_volume(*vol_lock);
+    }
+
     Ok(())
 }
 
@@ -160,7 +216,6 @@ fn update_track_tags(
     artist: String,
     album: String,
 ) -> Result<(), String> {
-    // 1. 実ファイルのタグを更新
     if let Ok(mut tagged_file) = Probe::open(&file_path).and_then(|p| p.read()) {
         let tag = match tagged_file.primary_tag_mut() {
             Some(primary_tag) => primary_tag,
@@ -180,7 +235,6 @@ fn update_track_tags(
         return Err("ファイルの読み込みに失敗しました".to_string());
     }
 
-    // 2. SQLiteデータベースの更新
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE tracks SET title = ?1, artist = ?2, album = ?3 WHERE id = ?4",
@@ -200,6 +254,7 @@ pub fn run() {
     let player = AudioPlayer {
         stream_handle,
         sink: Mutex::new(None),
+        volume: Mutex::new(1.0),
     };
 
     tauri::Builder::default()
@@ -236,8 +291,12 @@ pub fn run() {
             scan_directory,
             get_tracks,
             play_track,
+            toggle_play_pause,
+            set_volume,
             delete_track,
             update_track_tags,
+            get_playback_position,
+            seek_track,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

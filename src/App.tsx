@@ -22,12 +22,15 @@ export default function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [folderPath, setFolderPath] = useState("");
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [volume, setVolume] = useState(1);
   const [isScanning, setIsScanning] = useState(false);
 
-  // 選択中のアーティスト（null のときは全曲表示）
+  // 選択中のアーティスト名（常に特定のアーティストを選択状態にする）
   const [selectedArtist, setSelectedArtist] = useState<string | null>(null);
 
-  // 右クリックメニューのState
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
@@ -35,7 +38,6 @@ export default function App() {
     track: null,
   });
 
-  // タグ編集モーダルウィンドウ用のState
   const [editingTrack, setEditingTrack] = useState<Track | null>(null);
   const [editForm, setEditForm] = useState({ title: "", artist: "", album: "" });
   const [isSaving, setIsSaving] = useState(false);
@@ -55,18 +57,7 @@ export default function App() {
     loadTracks();
   }, []);
 
-  // 画面クリックでメニューを閉じる
-  useEffect(() => {
-    const handleClickOutside = () => {
-      if (contextMenu.visible) {
-        setContextMenu((prev) => ({ ...prev, visible: false }));
-      }
-    };
-    window.addEventListener("click", handleClickOutside);
-    return () => window.removeEventListener("click", handleClickOutside);
-  }, [contextMenu.visible]);
-
-  // アーティスト一覧と各曲数の集計
+  // アーティスト一覧の集計（五十音・アルファベット順）
   const artistList = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
@@ -78,13 +69,49 @@ export default function App() {
       .sort((a, b) => a.name.localeCompare(b.name, "ja"));
   }, [tracks]);
 
-  // 選択中のアーティストで絞り込んだトラック一覧
+  // トラック読み込み時や選択アーティストが消えた際、自動的に先頭のアーティストを選択
+  useEffect(() => {
+    if (artistList.length > 0) {
+      if (!selectedArtist || !artistList.some((a) => a.name === selectedArtist)) {
+        setSelectedArtist(artistList[0].name);
+      }
+    } else {
+      setSelectedArtist(null);
+    }
+  }, [artistList, selectedArtist]);
+
+  // 選択中アーティストのトラックのみを抽出（全曲表示は行わない）
   const filteredTracks = useMemo(() => {
-    if (!selectedArtist) return tracks;
+    if (!selectedArtist) return [];
     return tracks.filter((t) => (t.artist || "Unknown Artist") === selectedArtist);
   }, [tracks, selectedArtist]);
 
-  // 仮想スクロールは filteredTracks を対象にする
+  // 再生位置の定期ポーリング
+  useEffect(() => {
+    if (!isPlaying || isSeeking) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const pos = await invoke<number>("get_playback_position");
+        setCurrentTime(pos);
+      } catch (err) {
+        console.error("Failed to get playback position:", err);
+      }
+    }, 250);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, isSeeking]);
+
+  useEffect(() => {
+    const handleClickOutside = () => {
+      if (contextMenu.visible) {
+        setContextMenu((prev) => ({ ...prev, visible: false }));
+      }
+    };
+    window.addEventListener("click", handleClickOutside);
+    return () => window.removeEventListener("click", handleClickOutside);
+  }, [contextMenu.visible]);
+
   const rowVirtualizer = useVirtualizer({
     count: filteredTracks.length,
     getScrollElement: () => parentRef.current,
@@ -109,8 +136,51 @@ export default function App() {
     try {
       await invoke("play_track", { filePath: track.file_path });
       setCurrentTrack(track);
+      setIsPlaying(true);
+      setCurrentTime(0);
     } catch (err) {
       console.error("Playback error:", err);
+    }
+  };
+
+  const handleTogglePlayPause = async () => {
+    if (!currentTrack) {
+      if (filteredTracks.length > 0) {
+        handlePlay(filteredTracks[0]);
+      }
+      return;
+    }
+
+    try {
+      const playing = await invoke<boolean>("toggle_play_pause");
+      setIsPlaying(playing);
+    } catch (err) {
+      console.error("Toggle play/pause error:", err);
+    }
+  };
+
+  const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setIsSeeking(true);
+    setCurrentTime(parseFloat(e.target.value));
+  };
+
+  const handleSeekCommit = async () => {
+    try {
+      await invoke("seek_track", { positionSecs: currentTime });
+    } catch (err) {
+      console.error("Seek error:", err);
+    } finally {
+      setIsSeeking(false);
+    }
+  };
+
+  const handleVolumeChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setVolume(val);
+    try {
+      await invoke("set_volume", { volume: val });
+    } catch (err) {
+      console.error("Set volume error:", err);
     }
   };
 
@@ -137,6 +207,11 @@ export default function App() {
     try {
       await invoke("delete_track", { id: target.id });
       setTracks((prev) => prev.filter((t) => t.id !== target.id));
+      if (currentTrack?.id === target.id) {
+        setIsPlaying(false);
+        setCurrentTrack(null);
+        setCurrentTime(0);
+      }
     } catch (err) {
       console.error("Delete error:", err);
     }
@@ -190,10 +265,14 @@ export default function App() {
   };
 
   const formatDuration = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
+    const total = Math.floor(sec);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
+
+  const duration = currentTrack?.duration || 0;
+  const progressRatio = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
   return (
     <div
@@ -249,11 +328,11 @@ export default function App() {
           {isScanning ? "スキャン中..." : "スキャン"}
         </button>
         <span style={{ fontSize: "12px", color: "#888" }}>
-          {filteredTracks.length} / {tracks.length} トラック
+          {selectedArtist ? `${selectedArtist} (${filteredTracks.length} 曲)` : "0 トラック"}
         </span>
       </div>
 
-      {/* 2. メイン領域（左: アーティスト一覧 / 右: トラックテーブル） */}
+      {/* 2. メイン領域 */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
         {/* 左ペイン: アーティスト一覧 */}
         <div
@@ -279,37 +358,11 @@ export default function App() {
               letterSpacing: "0.5px",
             }}
           >
-            アーティスト
+            アーティスト ({artistList.length})
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-            {/* 全てのアーティスト項目 */}
-            <div
-              onClick={() => setSelectedArtist(null)}
-              style={{
-                padding: "6px 12px",
-                fontSize: "12px",
-                cursor: "pointer",
-                background: selectedArtist === null ? "#094771" : "transparent",
-                color: selectedArtist === null ? "#fff" : "#ccc",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-              onMouseEnter={(e) => {
-                if (selectedArtist !== null) e.currentTarget.style.background = "#2a2d2e";
-              }}
-              onMouseLeave={(e) => {
-                if (selectedArtist !== null) e.currentTarget.style.background = "transparent";
-              }}
-            >
-              <span>すべてのアーティスト</span>
-              <span style={{ fontSize: "10px", color: selectedArtist === null ? "#ddd" : "#777" }}>
-                {tracks.length}
-              </span>
-            </div>
-
-            {/* 個別アーティストリスト */}
+            {/* 「すべてのアーティスト」項目は除外 */}
             {artistList.map((item) => {
               const isSelected = selectedArtist === item.name;
               return (
@@ -355,7 +408,6 @@ export default function App() {
 
         {/* 右ペイン: トラック一覧テーブル */}
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {/* テーブルヘッダー */}
           <div
             style={{
               flexShrink: 0,
@@ -375,7 +427,6 @@ export default function App() {
             <div style={{ textAlign: "right" }}>長さ</div>
           </div>
 
-          {/* 仮想リストコンテナ */}
           <div
             ref={parentRef}
             style={{
@@ -395,7 +446,7 @@ export default function App() {
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const track = filteredTracks[virtualRow.index];
-                const isPlaying = currentTrack?.id === track.id;
+                const isThisTrack = currentTrack?.id === track.id;
 
                 return (
                   <div
@@ -416,12 +467,12 @@ export default function App() {
                       fontSize: "12px",
                       cursor: "pointer",
                       userSelect: "none",
-                      background: isPlaying
+                      background: isThisTrack
                         ? "#094771"
                         : virtualRow.index % 2 === 0
                         ? "#1e1e1e"
                         : "#222222",
-                      color: isPlaying ? "#fff" : "#ccc",
+                      color: isThisTrack ? "#fff" : "#ccc",
                       borderBottom: "1px solid #282828",
                     }}
                   >
@@ -430,9 +481,10 @@ export default function App() {
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
-                        fontWeight: isPlaying ? "bold" : "normal",
+                        fontWeight: isThisTrack ? "bold" : "normal",
                       }}
                     >
+                      {isThisTrack && (isPlaying ? "▶ " : "❚❚ ")}
                       {track.title}
                     </div>
                     <div
@@ -440,7 +492,7 @@ export default function App() {
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
-                        color: isPlaying ? "#ddd" : "#999",
+                        color: isThisTrack ? "#ddd" : "#999",
                       }}
                     >
                       {track.artist}
@@ -450,12 +502,12 @@ export default function App() {
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
-                        color: isPlaying ? "#ddd" : "#999",
+                        color: isThisTrack ? "#ddd" : "#999",
                       }}
                     >
                       {track.album}
                     </div>
-                    <div style={{ textAlign: "right", color: isPlaying ? "#ddd" : "#888" }}>
+                    <div style={{ textAlign: "right", color: isThisTrack ? "#ddd" : "#888" }}>
                       {formatDuration(track.duration)}
                     </div>
                   </div>
@@ -466,27 +518,138 @@ export default function App() {
         </div>
       </div>
 
-      {/* 3. 下部ステータスバー */}
+      {/* 3. MusicBee風 トランスポート / 再生バー */}
       <div
         style={{
           flexShrink: 0,
-          padding: "8px 16px",
-          background: "#181818",
-          borderTop: "1px solid #2d2d2d",
-          fontSize: "12px",
+          height: "48px",
+          background: "#22252a",
+          borderTop: "1px solid #333842",
           display: "flex",
-          justifyContent: "space-between",
           alignItems: "center",
+          padding: "0 16px",
+          gap: "16px",
         }}
       >
-        {currentTrack ? (
-          <div>
-            再生中: <strong>{currentTrack.title}</strong> - {currentTrack.artist} (
-            {formatDuration(currentTrack.duration)})
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          <button
+            onClick={handleTogglePlayPause}
+            title={isPlaying ? "一時停止" : "再生"}
+            style={{
+              width: "28px",
+              height: "28px",
+              borderRadius: "50%",
+              background: "#3e4451",
+              border: "none",
+              color: "#fff",
+              fontSize: "12px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#4b5263")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "#3e4451")}
+          >
+            {isPlaying ? "❚❚" : "▶"}
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "6px" }}>
+            <span style={{ fontSize: "12px", color: "#888", width: "14px", textAlign: "center" }}>
+              {volume === 0 ? "🔇" : volume < 0.5 ? "🔉" : "🔊"}
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={volume}
+              onChange={handleVolumeChange}
+              title={`音量: ${Math.round(volume * 100)}%`}
+              className="volume-slider"
+              style={{
+                width: "70px",
+                background: `linear-gradient(to right, #569cd6 0%, #569cd6 ${volume * 100}%, #3e3e42 ${volume * 100}%, #3e3e42 100%)`,
+              }}
+            />
           </div>
-        ) : (
-          <div style={{ color: "#666" }}>停止中</div>
-        )}
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            minWidth: 0,
+            gap: "3px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              fontSize: "11px",
+              color: "#ccc",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: "50%",
+                transform: "translateX(-50%)",
+                maxWidth: "60%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                textAlign: "center",
+              }}
+            >
+              {currentTrack ? (
+                <span>
+                  <strong style={{ color: "#fff" }}>{currentTrack.artist}</strong> - {currentTrack.title}
+                </span>
+              ) : (
+                <span style={{ color: "#666" }}>停止中</span>
+              )}
+            </div>
+
+            <div style={{ width: "80px" }} />
+
+            <div
+              style={{
+                fontSize: "11px",
+                color: "#9da5b4",
+                fontVariantNumeric: "tabular-nums",
+                textAlign: "right",
+                userSelect: "none",
+              }}
+            >
+              {formatDuration(currentTime)} / {formatDuration(duration)}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
+            <input
+              type="range"
+              min="0"
+              max={duration || 100}
+              step="0.1"
+              value={currentTime}
+              disabled={!currentTrack}
+              onChange={handleSeekChange}
+              onMouseUp={handleSeekCommit}
+              onTouchEnd={handleSeekCommit}
+              className="seek-slider"
+              style={{
+                width: "100%",
+                background: `linear-gradient(to right, #569cd6 0%, #569cd6 ${progressRatio}%, #3e3e42 ${progressRatio}%, #3e3e42 100%)`,
+              }}
+            />
+          </div>
+        </div>
       </div>
 
       {/* 右クリックコンテキストメニュー */}
@@ -538,7 +701,7 @@ export default function App() {
         </div>
       )}
 
-      {/* タグ編集ウィンドウ（モーダルダイアログ） */}
+      {/* タグ編集ウィンドウ */}
       {editingTrack && (
         <div
           style={{
