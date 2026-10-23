@@ -8,6 +8,7 @@ interface Track {
   title: string;
   artist: string;
   album: string;
+  genre: string;
   duration: number;
 }
 
@@ -46,7 +47,7 @@ export default function App() {
   // タグ編集モーダル用
   const [isEditing, setIsEditing] = useState(false);
   const [editingTracks, setEditingTracks] = useState<Track[]>([]);
-  const [editForm, setEditForm] = useState({ title: "", artist: "", album: "" });
+  const [editForm, setEditForm] = useState({ title: "", artist: "", album: "", genre: "" });
   const [isSaving, setIsSaving] = useState(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
@@ -261,18 +262,22 @@ export default function App() {
         title: targetList[0].title,
         artist: targetList[0].artist,
         album: targetList[0].album,
+        genre: targetList[0].genre,
       });
     } else {
       // 複数選択時：同じ値なら初期表示、異なれば空欄
       const firstArtist = targetList[0].artist;
       const firstAlbum = targetList[0].album;
+      const firstGenre = targetList[0].genre;
       const isSameArtist = targetList.every((t) => t.artist === firstArtist);
       const isSameAlbum = targetList.every((t) => t.album === firstAlbum);
+      const isSameGenre = targetList.every((t) => t.genre === firstGenre);
 
       setEditForm({
         title: "", // 複数はタイトル固定変更を避けるため空
         artist: isSameArtist ? firstArtist : "",
         album: isSameAlbum ? firstAlbum : "",
+        genre: isSameGenre ? firstGenre : "",
       });
     }
 
@@ -292,6 +297,7 @@ export default function App() {
         const newTitle = isMulti ? track.title : (editForm.title || track.title);
         const newArtist = editForm.artist.trim() !== "" ? editForm.artist : track.artist;
         const newAlbum = editForm.album.trim() !== "" ? editForm.album : track.album;
+        const newGenre = editForm.genre.trim() !== "" ? editForm.genre : track.genre;
 
         await invoke("update_track_tags", {
           id: track.id,
@@ -299,6 +305,7 @@ export default function App() {
           title: newTitle,
           artist: newArtist,
           album: newAlbum,
+          genre: newGenre,
         });
       }
 
@@ -336,6 +343,14 @@ export default function App() {
     } catch (err) {
       console.error("Set volume error:", err);
     }
+  };
+
+  // セミコロン区切りの先頭ジャンルを取得する関数
+  const getPrimaryGenre = (genreStr: string) => {
+    if (!genreStr) return "";
+    // セミコロン（半角・全角両対応）で分割し、先頭の余白を除去して取得
+    const parts = genreStr.split(/[;；]/);
+    return parts[0]?.trim() || "";
   };
 
   const formatDuration = (sec: number) => {
@@ -490,7 +505,7 @@ export default function App() {
             style={{
               flexShrink: 0,
               display: "grid",
-              gridTemplateColumns: "3fr 2fr 2fr 70px",
+              gridTemplateColumns: "3fr 2fr 2fr 1.5fr 70px",
               padding: "6px 12px",
               background: "#2d2d2d",
               borderBottom: "1px solid #3c3c3c",
@@ -502,6 +517,7 @@ export default function App() {
             <div>タイトル</div>
             <div>アーティスト</div>
             <div>アルバム</div>
+            <div>ジャンル</div>
             <div style={{ textAlign: "right" }}>長さ</div>
           </div>
 
@@ -545,7 +561,7 @@ export default function App() {
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                       display: "grid",
-                      gridTemplateColumns: "3fr 2fr 2fr 70px",
+                      gridTemplateColumns: "3fr 2fr 2fr 1.5fr 70px",
                       alignItems: "center",
                       padding: "0 12px",
                       fontSize: "12px",
@@ -588,6 +604,17 @@ export default function App() {
                       }}
                     >
                       {track.album}
+                    </div>
+                    <div
+                      title={track.genre} /* マウスを乗せると「Rock; Pop」と全ジャンルがポップアップ表示 */
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        color: isThisTrack || isSelected ? "#ddd" : "#999",
+                      }}
+                    >
+                      {getPrimaryGenre(track.genre)}
                     </div>
                     <div style={{ textAlign: "right", color: isThisTrack || isSelected ? "#ddd" : "#888" }}>
                       {formatDuration(track.duration)}
@@ -891,6 +918,27 @@ export default function App() {
                   placeholder={editingTracks.length > 1 ? "<現状を維持>" : ""}
                   value={editForm.album}
                   onChange={(e) => setEditForm({ ...editForm, album: e.target.value })}
+                  style={{
+                    padding: "6px 8px",
+                    background: "#3c3c3c",
+                    border: "1px solid #555",
+                    color: "#fff",
+                    borderRadius: "3px",
+                    fontSize: "13px",
+                  }}
+                />
+              </div>
+
+              {/* ジャンル入力欄 */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                <label style={{ fontSize: "11px", color: "#aaa" }}>
+                  ジャンル (複数時はセミコロン「;」区切り) {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
+                </label>
+                <input
+                  type="text"
+                  placeholder={editingTracks.length > 1 ? "<現状を維持>" : "例: Rock; J-Pop; Anime"}
+                  value={editForm.genre}
+                  onChange={(e) => setEditForm({ ...editForm, genre: e.target.value })}
                   style={{
                     padding: "6px 8px",
                     background: "#3c3c3c",

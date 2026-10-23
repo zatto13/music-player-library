@@ -18,6 +18,7 @@ pub struct Track {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub genre: String,
     pub duration: u32,
     pub track_number: Option<u32>,
 }
@@ -81,18 +82,24 @@ fn scan_directory(state: State<AppState>, dir_path: String) -> Result<usize, Str
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "Unknown Album".to_string());
 
+            let genre = tag
+                .and_then(|t| t.genre())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "Unknown Genre".to_string());
+
             let track_number = tag.and_then(|t| t.track());
 
             let _ = conn.execute(
-                "INSERT INTO tracks (file_path, title, artist, album, duration, track_number)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO tracks (file_path, title, artist, album, genre, duration, track_number)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(file_path) DO UPDATE SET
                     title=excluded.title,
                     artist=excluded.artist,
                     album=excluded.album,
+                    genre=excluded.genre,
                     duration=excluded.duration,
                     track_number=excluded.track_number",
-                params![file_path, title, artist, album, duration, track_number],
+                params![file_path, title, artist, album, genre, duration, track_number],
             );
             count += 1;
         }
@@ -105,7 +112,7 @@ fn scan_directory(state: State<AppState>, dir_path: String) -> Result<usize, Str
 fn get_tracks(state: State<AppState>) -> Result<Vec<Track>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, file_path, title, artist, album, duration, track_number FROM tracks ORDER BY artist, album, track_number")
+        .prepare("SELECT id, file_path, title, artist, album, genre, duration, track_number FROM tracks ORDER BY artist, album, track_number")
         .map_err(|e| e.to_string())?;
 
     let track_iter = stmt
@@ -116,8 +123,9 @@ fn get_tracks(state: State<AppState>) -> Result<Vec<Track>, String> {
                 title: row.get(2)?,
                 artist: row.get(3)?,
                 album: row.get(4)?,
-                duration: row.get(5)?,
-                track_number: row.get(6)?,
+                genre: row.get(5)?,
+                duration: row.get(6)?,
+                track_number: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -214,6 +222,7 @@ fn update_track_tags(
     file_path: String,
     title: String,
     artist: String,
+    genre: String,
     album: String,
 ) -> Result<(), String> {
     if let Ok(mut tagged_file) = Probe::open(&file_path).and_then(|p| p.read()) {
@@ -228,6 +237,7 @@ fn update_track_tags(
         tag.set_title(title.clone());
         tag.set_artist(artist.clone());
         tag.set_album(album.clone());
+        tag.set_genre(genre.clone());
 
         tag.save_to_path(&file_path, WriteOptions::default())
             .map_err(|e| format!("ファイルタグの書き込みに失敗: {}", e))?;
@@ -237,8 +247,8 @@ fn update_track_tags(
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3 WHERE id = ?4",
-        params![title, artist, album, id],
+        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, genre = ?4 WHERE id = ?5",
+        params![title, artist, album, genre, id],
     )
     .map_err(|e| format!("DB更新に失敗: {}", e))?;
 
@@ -264,6 +274,7 @@ pub fn run() {
             let db_path = app_dir.join("library.db");
 
             let conn = Connection::open(db_path).expect("Failed to open SQLite database");
+            // 既存テーブル作成
             conn.execute_batch(
                 r#"
                 CREATE TABLE IF NOT EXISTS tracks (
@@ -272,14 +283,26 @@ pub fn run() {
                     title TEXT NOT NULL,
                     artist TEXT NOT NULL,
                     album TEXT NOT NULL,
+                    genre TEXT NOT NULL DEFAULT 'Unknown Genre',
                     duration INTEGER NOT NULL,
                     track_number INTEGER
                 );
-                CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist);
-                CREATE INDEX IF NOT EXISTS idx_album ON tracks(album);
                 "#,
             )
             .expect("Failed to initialize database schema");
+
+            // 古いDBに genre 列がなければ自動追加（すでにあればエラーを無視）
+            let _ = conn.execute("ALTER TABLE tracks ADD COLUMN genre TEXT NOT NULL DEFAULT 'Unknown Genre'", []);
+
+            // インデックスの作成
+            conn.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist);
+                CREATE INDEX IF NOT EXISTS idx_album ON tracks(album);
+                CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre);
+                "#,
+            )
+            .expect("Failed to create indexes");
 
             app.manage(AppState {
                 db: Mutex::new(conn),
