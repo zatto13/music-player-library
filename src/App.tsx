@@ -12,6 +12,7 @@ interface Track {
   album: string;
   genre: string;
   duration: number;
+  track_number?: number | null;
 }
 
 interface ContextMenuState {
@@ -27,6 +28,9 @@ interface ScanProgressPayload {
 }
 
 type ViewMode = "album_artist" | "artist" | "album";
+type MainViewMode = "albums" | "table"; // ← アルバムビュー / テーブルビュー
+type SortTarget = "name" | "count";
+type SortOrder = "asc" | "desc";
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -41,9 +45,16 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [scannedCount, setScannedCount] = useState(0);
 
-  // 表示モードの切り替え ("album_artist" | "artist" | "album")
+  // 左ペイン表示モード切り替え
   const [viewMode, setViewMode] = useState<ViewMode>("album_artist");
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
+
+  // メイン画面の表示ビュー切り替え（初期値: アルバムビュー）
+  const [mainViewMode, setMainViewMode] = useState<MainViewMode>("albums");
+
+  // ソート状態
+  const [sortTarget, setSortTarget] = useState<SortTarget>("name");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
 
   // 選択中のキー
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -100,7 +111,7 @@ export default function App() {
     };
   }, []);
 
-  // アルバムアーティスト / アーティスト / アルバム一覧の集計
+  // アルバムアーティスト / アーティスト / アルバム一覧の集計とソート
   const paneItems = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
@@ -114,10 +125,23 @@ export default function App() {
       }
       counts.set(name, (counts.get(name) || 0) + 1);
     }
-    return Array.from(counts.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => a.name.localeCompare(b.name, "ja"));
-  }, [tracks, viewMode]);
+
+    const items = Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+
+    items.sort((a, b) => {
+      if (sortTarget === "name") {
+        const cmp = a.name.localeCompare(b.name, "ja");
+        return sortOrder === "asc" ? cmp : -cmp;
+      } else {
+        if (a.count !== b.count) {
+          return sortOrder === "asc" ? a.count - b.count : b.count - a.count;
+        }
+        return a.name.localeCompare(b.name, "ja");
+      }
+    });
+
+    return items;
+  }, [tracks, viewMode, sortTarget, sortOrder]);
 
   // モード切り替え時やデータ読み込み時に先頭項目を自動選択
   useEffect(() => {
@@ -146,6 +170,37 @@ export default function App() {
     });
   }, [tracks, selectedKey, viewMode]);
 
+  // ★ アルバムごとにグルーピングしたデータ構造の生成
+  const groupedAlbums = useMemo(() => {
+    const map = new Map<string, Track[]>();
+    for (const track of filteredTracks) {
+      const albumKey = track.album || "Unknown Album";
+      if (!map.has(albumKey)) {
+        map.set(albumKey, []);
+      }
+      map.get(albumKey)!.push(track);
+    }
+
+    return Array.from(map.entries()).map(([albumTitle, albumTracks]) => {
+      // トラック番号順にソート（なければタイトル順）
+      albumTracks.sort((a, b) => {
+        if (a.track_number && b.track_number) return a.track_number - b.track_number;
+        return a.title.localeCompare(b.title, "ja");
+      });
+
+      const totalDuration = albumTracks.reduce((acc, cur) => acc + cur.duration, 0);
+      const albumArtist = albumTracks[0]?.album_artist || albumTracks[0]?.artist || "Unknown Artist";
+
+      return {
+        albumTitle,
+        albumArtist,
+        tracks: albumTracks,
+        totalDuration,
+        count: albumTracks.length,
+      };
+    });
+  }, [filteredTracks]);
+
   // 再生位置ポーリング
   useEffect(() => {
     if (!isPlaying || isSeeking) return;
@@ -169,6 +224,7 @@ export default function App() {
     return () => window.removeEventListener("click", handleClickOutside);
   }, [contextMenu.visible, isViewMenuOpen]);
 
+  // テーブルビュー用の仮想スクロール
   const rowVirtualizer = useVirtualizer({
     count: filteredTracks.length,
     getScrollElement: () => parentRef.current,
@@ -433,6 +489,39 @@ export default function App() {
         >
           {isScanning ? `スキャン中 (${scannedCount} 件)...` : "スキャン"}
         </button>
+
+        {/* メイン画面の表示切り替えタブボタン */}
+        <div style={{ display: "flex", background: "#181818", padding: "2px", borderRadius: "4px", gap: "2px", border: "1px solid #3c3c3c" }}>
+          <button
+            onClick={() => setMainViewMode("albums")}
+            style={{
+              padding: "3px 10px",
+              fontSize: "11px",
+              background: mainViewMode === "albums" ? "#0e639c" : "transparent",
+              color: mainViewMode === "albums" ? "#fff" : "#888",
+              border: "none",
+              borderRadius: "3px",
+              cursor: "pointer",
+            }}
+          >
+            アルバムとトラック
+          </button>
+          <button
+            onClick={() => setMainViewMode("table")}
+            style={{
+              padding: "3px 10px",
+              fontSize: "11px",
+              background: mainViewMode === "table" ? "#0e639c" : "transparent",
+              color: mainViewMode === "table" ? "#fff" : "#888",
+              border: "none",
+              borderRadius: "3px",
+              cursor: "pointer",
+            }}
+          >
+            曲リスト
+          </button>
+        </div>
+
         <span style={{ fontSize: "12px", color: "#888" }}>
           {selectedKey ? `${selectedKey} (${filteredTracks.length} 曲)` : "0 トラック"}
           {selectedIds.size > 0 && ` [${selectedIds.size} 件選択中]`}
@@ -482,7 +571,7 @@ export default function App() {
             <span style={{ fontSize: "9px", color: "#777" }}>▾</span>
           </div>
 
-          {/* 切り替えドロップダウンメニュー */}
+          {/* 切り替え＆ソート ドロップダウンメニュー */}
           {isViewMenuOpen && (
             <div
               onClick={(e) => e.stopPropagation()}
@@ -496,10 +585,13 @@ export default function App() {
                 borderRadius: "4px",
                 zIndex: 1100,
                 padding: "4px 0",
-                minWidth: "160px",
+                minWidth: "180px",
                 fontSize: "12px",
               }}
             >
+              <div style={{ fontSize: "10px", color: "#777", padding: "4px 12px 2px", fontWeight: "bold" }}>
+                表示対象
+              </div>
               <div
                 onClick={() => {
                   setViewMode("album_artist");
@@ -507,7 +599,7 @@ export default function App() {
                   setSelectedIds(new Set());
                 }}
                 style={{
-                  padding: "6px 14px",
+                  padding: "5px 14px",
                   cursor: "pointer",
                   color: viewMode === "album_artist" ? "#569cd6" : "#eee",
                   fontWeight: viewMode === "album_artist" ? "bold" : "normal",
@@ -524,7 +616,7 @@ export default function App() {
                   setSelectedIds(new Set());
                 }}
                 style={{
-                  padding: "6px 14px",
+                  padding: "5px 14px",
                   cursor: "pointer",
                   color: viewMode === "artist" ? "#569cd6" : "#eee",
                   fontWeight: viewMode === "artist" ? "bold" : "normal",
@@ -541,7 +633,7 @@ export default function App() {
                   setSelectedIds(new Set());
                 }}
                 style={{
-                  padding: "6px 14px",
+                  padding: "5px 14px",
                   cursor: "pointer",
                   color: viewMode === "album" ? "#569cd6" : "#eee",
                   fontWeight: viewMode === "album" ? "bold" : "normal",
@@ -551,10 +643,84 @@ export default function App() {
               >
                 {viewMode === "album" ? "✓ アルバム" : " アルバム"}
               </div>
+
+              <div style={{ height: "1px", background: "#3c3c3c", margin: "4px 0" }} />
+
+              <div style={{ fontSize: "10px", color: "#777", padding: "4px 12px 2px", fontWeight: "bold" }}>
+                ソート
+              </div>
+              <div
+                onClick={() => {
+                  setSortTarget("name");
+                  setSortOrder("asc");
+                  setIsViewMenuOpen(false);
+                }}
+                style={{
+                  padding: "5px 14px",
+                  cursor: "pointer",
+                  color: sortTarget === "name" && sortOrder === "asc" ? "#569cd6" : "#eee",
+                  fontWeight: sortTarget === "name" && sortOrder === "asc" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {sortTarget === "name" && sortOrder === "asc" ? "✓ 名前 (昇順: A-Z)" : " 名前 (昇順: A-Z)"}
+              </div>
+              <div
+                onClick={() => {
+                  setSortTarget("name");
+                  setSortOrder("desc");
+                  setIsViewMenuOpen(false);
+                }}
+                style={{
+                  padding: "5px 14px",
+                  cursor: "pointer",
+                  color: sortTarget === "name" && sortOrder === "desc" ? "#569cd6" : "#eee",
+                  fontWeight: sortTarget === "name" && sortOrder === "desc" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {sortTarget === "name" && sortOrder === "desc" ? "✓ 名前 (降順: Z-A)" : " 名前 (降順: Z-A)"}
+              </div>
+              <div
+                onClick={() => {
+                  setSortTarget("count");
+                  setSortOrder("desc");
+                  setIsViewMenuOpen(false);
+                }}
+                style={{
+                  padding: "5px 14px",
+                  cursor: "pointer",
+                  color: sortTarget === "count" && sortOrder === "desc" ? "#569cd6" : "#eee",
+                  fontWeight: sortTarget === "count" && sortOrder === "desc" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {sortTarget === "count" && sortOrder === "desc" ? "✓ 曲数 (多い順)" : " 曲数 (多い順)"}
+              </div>
+              <div
+                onClick={() => {
+                  setSortTarget("count");
+                  setSortOrder("asc");
+                  setIsViewMenuOpen(false);
+                }}
+                style={{
+                  padding: "5px 14px",
+                  cursor: "pointer",
+                  color: sortTarget === "count" && sortOrder === "asc" ? "#569cd6" : "#eee",
+                  fontWeight: sortTarget === "count" && sortOrder === "asc" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {sortTarget === "count" && sortOrder === "asc" ? "✓ 曲数 (少ない順)" : " 曲数 (少ない順)"}
+              </div>
             </div>
           )}
 
-          {/* アイテムリスト */}
+          {/* 左ペイン アイテムリスト */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
             {paneItems.map((item) => {
               const isSelected = selectedKey === item.name;
@@ -603,108 +769,266 @@ export default function App() {
           </div>
         </div>
 
-        {/* 右ペイン: トラック一覧テーブル */}
-        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* 右ペイン: 表示モードに応じて切り替え */}
+        {mainViewMode === "albums" ? (
+          /* ★ MusicBee風「アルバムとトラック」ビュー */
           <div
-            style={{
-              flexShrink: 0,
-              display: "grid",
-              // タイトル / アーティスト / アルバムアーティスト / アルバム / ジャンル / 長さ (6列)
-              gridTemplateColumns: "3fr 2fr 2fr 2fr 1.5fr 70px",
-              padding: "6px 12px",
-              background: "#2d2d2d",
-              borderBottom: "1px solid #3c3c3c",
-              fontSize: "12px",
-              fontWeight: "bold",
-              color: "#aaa",
-            }}
-          >
-            <div>タイトル</div>
-            <div>アーティスト</div>
-            <div>アルバムアーティスト</div>
-            <div>アルバム</div>
-            <div>ジャンル</div>
-            <div style={{ textAlign: "right" }}>長さ</div>
-          </div>
-
-          <div
-            ref={parentRef}
             style={{
               flex: 1,
               minHeight: 0,
               overflowY: "auto",
-              overflowX: "hidden",
-              position: "relative",
+              padding: "16px 20px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "28px",
             }}
           >
+            {groupedAlbums.map((group) => (
+              <div
+                key={group.albumTitle}
+                style={{
+                  display: "flex",
+                  gap: "20px",
+                  alignItems: "flex-start",
+                }}
+              >
+                {/* 左: アルバムジャケット画像枠 */}
+                <div
+                  style={{
+                    width: "140px",
+                    height: "140px",
+                    flexShrink: 0,
+                    background: "#282a2e",
+                    border: "1px solid #3c3c3c",
+                    borderRadius: "4px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    boxShadow: "0 4px 10px rgba(0,0,0,0.5)",
+                    position: "relative",
+                    overflow: "hidden",
+                  }}
+                >
+                  <span style={{ fontSize: "40px", opacity: 0.25 }}>💿</span>
+                  <span
+                    style={{
+                      position: "absolute",
+                      bottom: "4px",
+                      left: "4px",
+                      right: "4px",
+                      fontSize: "10px",
+                      color: "#888",
+                      textAlign: "center",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {group.albumTitle}
+                  </span>
+                </div>
+
+                {/* 右: アルバム詳細 ＆ トラックリスト */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* アルバムヘッダー */}
+                  <div
+                    style={{
+                      borderBottom: "1px solid #333",
+                      paddingBottom: "6px",
+                      marginBottom: "8px",
+                      display: "flex",
+                      alignItems: "baseline",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "10px", overflow: "hidden" }}>
+                      <span
+                        style={{
+                          fontSize: "16px",
+                          fontWeight: "bold",
+                          color: "#fff",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {group.albumTitle}
+                      </span>
+                      <span style={{ fontSize: "12px", color: "#888" }}>
+                        {group.albumArtist}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: "11px", color: "#666", flexShrink: 0 }}>
+                      {group.count} 曲, {formatDuration(group.totalDuration)}
+                    </span>
+                  </div>
+
+                  {/* アルバムに属する曲のリスト */}
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    {group.tracks.map((t, idx) => {
+                      const isThisTrack = currentTrack?.id === t.id;
+                      const isSelected = selectedIds.has(t.id);
+                      const globalIndex = filteredTracks.findIndex((ft) => ft.id === t.id);
+
+                      let bg = "transparent";
+                      if (isSelected) bg = "#04395e";
+                      if (isThisTrack) bg = "#094771";
+
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={(e) => handleRowClick(e, globalIndex >= 0 ? globalIndex : 0, t)}
+                          onDoubleClick={() => handlePlay(t)}
+                          onContextMenu={(e) => handleContextMenu(e, globalIndex >= 0 ? globalIndex : 0, t)}
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "36px 1fr 60px 50px",
+                            padding: "4px 8px",
+                            fontSize: "12px",
+                            alignItems: "center",
+                            borderRadius: "3px",
+                            background: bg,
+                            color: isThisTrack || isSelected ? "#fff" : "#bbb",
+                            cursor: "pointer",
+                            userSelect: "none",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!isSelected && !isThisTrack) e.currentTarget.style.background = "#26282e";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!isSelected && !isThisTrack) e.currentTarget.style.background = "transparent";
+                          }}
+                        >
+                          {/* トラック番号 */}
+                          <div style={{ color: "#777", fontSize: "11px" }}>
+                            {isThisTrack ? (isPlaying ? "▶" : "❚❚") : (t.track_number ? String(t.track_number).padStart(2, "0") : String(idx + 1).padStart(2, "0"))}
+                          </div>
+
+                          {/* タイトル */}
+                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isThisTrack ? "bold" : "normal" }}>
+                            {t.title}
+                          </div>
+
+                          {/* 評価星マーク（MusicBee風ダミー） */}
+                          <div style={{ color: "#555", fontSize: "10px", letterSpacing: "1px" }}>
+                            ★★★★
+                          </div>
+
+                          {/* 長さ */}
+                          <div style={{ textAlign: "right", color: "#888", fontVariantNumeric: "tabular-nums" }}>
+                            {formatDuration(t.duration)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          /* 従来のフラットなトラック一覧テーブル */
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div
               style={{
-                height: `${rowVirtualizer.getTotalSize()}px`,
-                width: "100%",
+                flexShrink: 0,
+                display: "grid",
+                gridTemplateColumns: "3fr 2fr 2fr 2fr 1.5fr 70px",
+                padding: "6px 12px",
+                background: "#2d2d2d",
+                borderBottom: "1px solid #3c3c3c",
+                fontSize: "12px",
+                fontWeight: "bold",
+                color: "#aaa",
+              }}
+            >
+              <div>タイトル</div>
+              <div>アーティスト</div>
+              <div>アルバムアーティスト</div>
+              <div>アルバム</div>
+              <div>ジャンル</div>
+              <div style={{ textAlign: "right" }}>長さ</div>
+            </div>
+
+            <div
+              ref={parentRef}
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+                overflowX: "hidden",
                 position: "relative",
               }}
             >
-              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                const track = filteredTracks[virtualRow.index];
-                const isThisTrack = currentTrack?.id === track.id;
-                const isSelected = selectedIds.has(track.id);
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: "100%",
+                  position: "relative",
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const track = filteredTracks[virtualRow.index];
+                  const isThisTrack = currentTrack?.id === track.id;
+                  const isSelected = selectedIds.has(track.id);
 
-                let rowBg = virtualRow.index % 2 === 0 ? "#1e1e1e" : "#222222";
-                if (isSelected) rowBg = "#04395e";
-                if (isThisTrack) rowBg = "#094771";
+                  let rowBg = virtualRow.index % 2 === 0 ? "#1e1e1e" : "#222222";
+                  if (isSelected) rowBg = "#04395e";
+                  if (isThisTrack) rowBg = "#094771";
 
-                return (
-                  <div
-                    key={track.id}
-                    onClick={(e) => handleRowClick(e, virtualRow.index, track)}
-                    onDoubleClick={() => handlePlay(track)}
-                    onContextMenu={(e) => handleContextMenu(e, virtualRow.index, track)}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      height: `${virtualRow.size}px`,
-                      transform: `translateY(${virtualRow.start}px)`,
-                      display: "grid",
-                      gridTemplateColumns: "3fr 2fr 2fr 2fr 1.5fr 70px",
-                      alignItems: "center",
-                      padding: "0 12px",
-                      fontSize: "12px",
-                      cursor: "pointer",
-                      userSelect: "none",
-                      background: rowBg,
-                      color: isThisTrack || isSelected ? "#fff" : "#ccc",
-                      borderBottom: "1px solid #282828",
-                      outline: isSelected ? "1px solid #007acc" : "none",
-                      outlineOffset: "-1px",
-                    }}
-                  >
-                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isThisTrack ? "bold" : "normal" }}>
-                      {isThisTrack && (isPlaying ? "▶ " : "❚❚ ")}
-                      {track.title}
+                  return (
+                    <div
+                      key={track.id}
+                      onClick={(e) => handleRowClick(e, virtualRow.index, track)}
+                      onDoubleClick={() => handlePlay(track)}
+                      onContextMenu={(e) => handleContextMenu(e, virtualRow.index, track)}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                        display: "grid",
+                        gridTemplateColumns: "3fr 2fr 2fr 2fr 1.5fr 70px",
+                        alignItems: "center",
+                        padding: "0 12px",
+                        fontSize: "12px",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        background: rowBg,
+                        color: isThisTrack || isSelected ? "#fff" : "#ccc",
+                        borderBottom: "1px solid #282828",
+                        outline: isSelected ? "1px solid #007acc" : "none",
+                        outlineOffset: "-1px",
+                      }}
+                    >
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isThisTrack ? "bold" : "normal" }}>
+                        {isThisTrack && (isPlaying ? "▶ " : "❚❚ ")}
+                        {track.title}
+                      </div>
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
+                        {track.artist}
+                      </div>
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
+                        {track.album_artist || "-"}
+                      </div>
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
+                        {track.album}
+                      </div>
+                      <div title={track.genre} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
+                        {getPrimaryGenre(track.genre)}
+                      </div>
+                      <div style={{ textAlign: "right", color: isThisTrack || isSelected ? "#ddd" : "#888" }}>
+                        {formatDuration(track.duration)}
+                      </div>
                     </div>
-                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
-                      {track.artist}
-                    </div>
-                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
-                      {track.album_artist || "-"}
-                    </div>
-                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
-                      {track.album}
-                    </div>
-                    <div title={track.genre} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
-                      {getPrimaryGenre(track.genre)}
-                    </div>
-                    <div style={{ textAlign: "right", color: isThisTrack || isSelected ? "#ddd" : "#888" }}>
-                      {formatDuration(track.duration)}
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* 3. トランスポート / 再生バー */}
@@ -934,7 +1258,6 @@ export default function App() {
                 />
               </div>
 
-              {/* アルバムアーティスト入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>
                   アルバムアーティスト {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
