@@ -1,11 +1,12 @@
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, Tag, TagExt};
+use lofty::tag::items::ItemKey;
+use lofty::tag::{Accessor, Tag, TagExt, TagItem};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::fs::{create_dir_all, File};
+use std::fs::File;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ pub struct Track {
     pub file_path: String,
     pub title: String,
     pub artist: String,
+    pub album_artist: String, // ← 追加
     pub album: String,
     pub genre: String,
     pub duration: u32,
@@ -41,10 +43,9 @@ pub struct AudioPlayer {
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub player: AudioPlayer,
-    pub is_scanning: Arc<AtomicBool>, // スキャン中の重複実行防止フラグ
+    pub is_scanning: Arc<AtomicBool>,
 }
 
-// バックグラウンドで非同期スキャンを実行するコマンド
 #[tauri::command]
 fn start_scan_directory(
     app: AppHandle,
@@ -100,6 +101,12 @@ fn start_scan_directory(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Unknown Artist".to_string());
 
+                // アルバムアーティストの取得（なければアーティスト名でフォールバック）
+                let album_artist = tag
+                    .and_then(|t| t.get_string(&ItemKey::AlbumArtist))
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| artist.clone());
+
                 let album = tag
                     .and_then(|t| t.album())
                     .map(|s| s.to_string())
@@ -117,35 +124,44 @@ fn start_scan_directory(
                     file_path,
                     title,
                     artist,
+                    album_artist,
                     album,
                     genre,
                     duration,
                     track_number,
                 });
 
-                // 100曲単位でトランザクションを張って一括保存（ロック時間を極小化）
                 if batch.len() >= 100 {
                     if let Ok(mut conn) = db.lock() {
                         if let Ok(tx) = conn.transaction() {
                             for t in batch.drain(..) {
                                 let _ = tx.execute(
-                                    "INSERT INTO tracks (file_path, title, artist, album, genre, duration, track_number)
-                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                                    "INSERT INTO tracks (file_path, title, artist, album_artist, album, genre, duration, track_number)
+                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                                      ON CONFLICT(file_path) DO UPDATE SET
                                         title=excluded.title,
                                         artist=excluded.artist,
+                                        album_artist=excluded.album_artist,
                                         album=excluded.album,
                                         genre=excluded.genre,
                                         duration=excluded.duration,
                                         track_number=excluded.track_number",
-                                    params![t.file_path, t.title, t.artist, t.album, t.genre, t.duration, t.track_number],
+                                    params![
+                                        t.file_path,
+                                        t.title,
+                                        t.artist,
+                                        t.album_artist,
+                                        t.album,
+                                        t.genre,
+                                        t.duration,
+                                        t.track_number
+                                    ],
                                 );
                             }
                             let _ = tx.commit();
                         }
                     }
                     count += 100;
-                    // React側へ進行状況を通知
                     let _ = app.emit("scan-progress", ScanProgressPayload {
                         scanned: count,
                         is_finished: false,
@@ -154,23 +170,32 @@ fn start_scan_directory(
             }
         }
 
-        // 残りの曲をコミット
         if !batch.is_empty() {
             count += batch.len();
             if let Ok(mut conn) = db.lock() {
                 if let Ok(tx) = conn.transaction() {
                     for t in batch.drain(..) {
                         let _ = tx.execute(
-                            "INSERT INTO tracks (file_path, title, artist, album, genre, duration, track_number)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                            "INSERT INTO tracks (file_path, title, artist, album_artist, album, genre, duration, track_number)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                              ON CONFLICT(file_path) DO UPDATE SET
                                 title=excluded.title,
                                 artist=excluded.artist,
+                                album_artist=excluded.album_artist,
                                 album=excluded.album,
                                 genre=excluded.genre,
                                 duration=excluded.duration,
                                 track_number=excluded.track_number",
-                            params![t.file_path, t.title, t.artist, t.album, t.genre, t.duration, t.track_number],
+                            params![
+                                t.file_path,
+                                t.title,
+                                t.artist,
+                                t.album_artist,
+                                t.album,
+                                t.genre,
+                                t.duration,
+                                t.track_number
+                            ],
                         );
                     }
                     let _ = tx.commit();
@@ -192,7 +217,7 @@ fn start_scan_directory(
 fn get_tracks(state: State<AppState>) -> Result<Vec<Track>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, file_path, title, artist, album, genre, duration, track_number FROM tracks ORDER BY artist, album, track_number")
+        .prepare("SELECT id, file_path, title, artist, album_artist, album, genre, duration, track_number FROM tracks ORDER BY album_artist, album, track_number")
         .map_err(|e| e.to_string())?;
 
     let track_iter = stmt
@@ -202,10 +227,11 @@ fn get_tracks(state: State<AppState>) -> Result<Vec<Track>, String> {
                 file_path: row.get(1)?,
                 title: row.get(2)?,
                 artist: row.get(3)?,
-                album: row.get(4)?,
-                genre: row.get(5)?,
-                duration: row.get(6)?,
-                track_number: row.get(7)?,
+                album_artist: row.get(4)?,
+                album: row.get(5)?,
+                genre: row.get(6)?,
+                duration: row.get(7)?,
+                track_number: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -298,6 +324,7 @@ fn update_track_tags(
     file_path: String,
     title: String,
     artist: String,
+    album_artist: String,
     album: String,
     genre: String,
 ) -> Result<(), String> {
@@ -315,6 +342,12 @@ fn update_track_tags(
         tag.set_album(album.clone());
         tag.set_genre(genre.clone());
 
+        // アルバムアーティストのタグ書き込み
+        tag.insert_item(TagItem::new(
+            ItemKey::AlbumArtist,
+            lofty::tag::ItemValue::Text(album_artist.clone()),
+        ));
+
         tag.save_to_path(&file_path, WriteOptions::default())
             .map_err(|e| format!("ファイルタグの書き込みに失敗: {}", e))?;
     } else {
@@ -323,8 +356,8 @@ fn update_track_tags(
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, genre = ?4 WHERE id = ?5",
-        params![title, artist, album, genre, id],
+        "UPDATE tracks SET title = ?1, artist = ?2, album_artist = ?3, album = ?4, genre = ?5 WHERE id = ?6",
+        params![title, artist, album_artist, album, genre, id],
     )
     .map_err(|e| format!("DB更新に失敗: {}", e))?;
 
@@ -357,6 +390,7 @@ pub fn run() {
                     file_path TEXT UNIQUE NOT NULL,
                     title TEXT NOT NULL,
                     artist TEXT NOT NULL,
+                    album_artist TEXT NOT NULL DEFAULT '',
                     album TEXT NOT NULL,
                     genre TEXT NOT NULL DEFAULT 'Unknown Genre',
                     duration INTEGER NOT NULL,
@@ -370,10 +404,16 @@ pub fn run() {
                 "ALTER TABLE tracks ADD COLUMN genre TEXT NOT NULL DEFAULT 'Unknown Genre'",
                 [],
             );
+            // 既存DBに album_artist 列がなければ自動追加
+            let _ = conn.execute(
+                "ALTER TABLE tracks ADD COLUMN album_artist TEXT NOT NULL DEFAULT ''",
+                [],
+            );
 
             conn.execute_batch(
                 r#"
                 CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist);
+                CREATE INDEX IF NOT EXISTS idx_album_artist ON tracks(album_artist);
                 CREATE INDEX IF NOT EXISTS idx_album ON tracks(album);
                 CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre);
                 "#,
@@ -388,7 +428,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            start_scan_directory, // ← scan_directory から変更
+            start_scan_directory,
             get_tracks,
             play_track,
             toggle_play_pause,

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 interface Track {
@@ -19,6 +20,11 @@ interface ContextMenuState {
   targetTrack: Track | null;
 }
 
+interface ScanProgressPayload {
+  scanned: number;
+  is_finished: boolean;
+}
+
 type ViewMode = "artist" | "album";
 
 export default function App() {
@@ -29,7 +35,10 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [isSeeking, setIsSeeking] = useState(false);
   const [volume, setVolume] = useState(1);
+
+  // バックグラウンドスキャン状態
   const [isScanning, setIsScanning] = useState(false);
+  const [scannedCount, setScannedCount] = useState(0);
 
   // 表示モードの切り替え ("artist" または "album")
   const [viewMode, setViewMode] = useState<ViewMode>("artist");
@@ -69,6 +78,20 @@ export default function App() {
 
   useEffect(() => {
     loadTracks();
+
+    // バックグラウンドスキャンの進捗イベントを購読
+    const unlistenPromise = listen<ScanProgressPayload>("scan-progress", (event) => {
+      setScannedCount(event.payload.scanned);
+      loadTracks();
+
+      if (event.payload.is_finished) {
+        setIsScanning(false);
+      }
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
   }, []);
 
   // アーティストまたはアルバム一覧の集計
@@ -144,14 +167,11 @@ export default function App() {
   const handleScan = async () => {
     if (!folderPath) return;
     setIsScanning(true);
+    setScannedCount(0);
     try {
-      await invoke("scan_directory", { dirPath: folderPath });
-      await loadTracks();
-      setSelectedIds(new Set());
-      setLastSelectedIndex(null);
+      await invoke("start_scan_directory", { dirPath: folderPath });
     } catch (err) {
       alert(`スキャンエラー: ${err}`);
-    } finally {
       setIsScanning(false);
     }
   };
@@ -410,14 +430,14 @@ export default function App() {
           disabled={isScanning}
           style={{
             padding: "4px 12px",
-            background: "#0e639c",
+            background: isScanning ? "#555" : "#0e639c",
             color: "#fff",
             border: "none",
             borderRadius: "3px",
-            cursor: "pointer",
+            cursor: isScanning ? "default" : "pointer",
           }}
         >
-          {isScanning ? "スキャン中..." : "スキャン"}
+          {isScanning ? `スキャン中 (${scannedCount} 件)...` : "スキャン"}
         </button>
         <span style={{ fontSize: "12px", color: "#888" }}>
           {selectedKey ? `${selectedKey} (${filteredTracks.length} 曲)` : "0 トラック"}
@@ -440,7 +460,6 @@ export default function App() {
             position: "relative",
           }}
         >
-          {/* ペインヘッダー（MusicBee風 ドロップダウン切り替え） */}
           <div
             onClick={(e) => {
               e.stopPropagation();
@@ -468,7 +487,6 @@ export default function App() {
             <span style={{ fontSize: "9px", color: "#777" }}>▾</span>
           </div>
 
-          {/* 切り替えドロップダウンメニュー */}
           {isViewMenuOpen && (
             <div
               onClick={(e) => e.stopPropagation()}
@@ -523,7 +541,6 @@ export default function App() {
             </div>
           )}
 
-          {/* アイテムリスト */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
             {paneItems.map((item) => {
               const isSelected = selectedKey === item.name;
