@@ -1,0 +1,167 @@
+import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useVirtualizer } from "@tanstack/react-virtual";
+
+interface Track {
+  id: number;
+  file_path: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+}
+
+export default function App() {
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [folderPath, setFolderPath] = useState("");
+  const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const loadTracks = async () => {
+    try {
+      const res = await invoke<Track[]>("get_tracks");
+      setTracks(res);
+    } catch (err) {
+      console.error("Failed to load tracks:", err);
+    }
+  };
+
+  useEffect(() => {
+    loadTracks();
+  }, []);
+
+  const rowVirtualizer = useVirtualizer({
+    count: tracks.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28,
+    overscan: 15,
+  });
+
+  const handleScan = async () => {
+    if (!folderPath) return;
+    setIsScanning(true);
+    try {
+      await invoke("scan_directory", { dirPath: folderPath });
+      await loadTracks();
+    } catch (err) {
+      alert(`スキャンエラー: ${err}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handlePlay = async (track: Track) => {
+    try {
+      await invoke("play_track", { filePath: track.file_path });
+      setCurrentTrack(track);
+    } catch (err) {
+      console.error("Playback error:", err);
+    }
+  };
+
+  // ライブラリから削除するハンドラ
+  const handleDelete = async (e: React.MouseEvent, track: Track) => {
+    e.preventDefault(); // ブラウザ標準の右クリックメニューを抑制
+    const confirmed = window.confirm(`「${track.title}」をライブラリから削除する？\n(※実ファイルは削除されません)`);
+    if (!confirmed) return;
+
+    try {
+      await invoke("delete_track", { id: track.id });
+      // ローカルのstateからも即座に間引く（再フェッチ不要で即応性が高い）
+      setTracks((prev) => prev.filter((t) => t.id !== track.id));
+    } catch (err) {
+      console.error("Delete error:", err);
+    }
+  };
+
+  const formatDuration = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  return (
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", fontFamily: "Segoe UI, sans-serif", background: "#1e1e1e", color: "#ddd" }}>
+      {/* 操作バー */}
+      <div style={{ padding: "8px 12px", background: "#252526", borderBottom: "1px solid #333", display: "flex", gap: "8px", alignItems: "center" }}>
+        <input
+          type="text"
+          placeholder="絶対パスを入力 (例: D:\Music)"
+          value={folderPath}
+          onChange={(e) => setFolderPath(e.target.value)}
+          style={{ flex: 1, padding: "4px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px" }}
+        />
+        <button
+          onClick={handleScan}
+          disabled={isScanning}
+          style={{ padding: "4px 12px", background: "#0e639c", color: "#fff", border: "none", borderRadius: "3px", cursor: "pointer" }}
+        >
+          {isScanning ? "スキャン中..." : "スキャン"}
+        </button>
+        <span style={{ fontSize: "12px", color: "#888" }}>{tracks.length} トラック</span>
+      </div>
+
+      {/* テーブルヘッダー */}
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr 2fr 70px", padding: "6px 12px", background: "#2d2d2d", borderBottom: "1px solid #3c3c3c", fontSize: "12px", fontWeight: "bold", color: "#aaa" }}>
+        <div>タイトル</div>
+        <div>アーティスト</div>
+        <div>アルバム</div>
+        <div style={{ textAlign: "right" }}>長さ</div>
+      </div>
+
+      {/* 仮想リストコンテナ */}
+      <div ref={parentRef} style={{ flex: 1, overflowY: "auto", position: "relative" }}>
+        <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, width: "100%", position: "relative" }}>
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const track = tracks[virtualRow.index];
+            const isPlaying = currentTrack?.id === track.id;
+            return (
+              <div
+                key={track.id}
+                onDoubleClick={() => handlePlay(track)}
+                onContextMenu={(e) => handleDelete(e, track)} // ← 右クリックで削除トリガー
+                title="ダブルクリック: 再生 / 右クリック: ライブラリから削除"
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                  display: "grid",
+                  gridTemplateColumns: "3fr 2fr 2fr 70px",
+                  alignItems: "center",
+                  padding: "0 12px",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background: isPlaying ? "#094771" : virtualRow.index % 2 === 0 ? "#1e1e1e" : "#222222",
+                  color: isPlaying ? "#fff" : "#ccc",
+                  borderBottom: "1px solid #282828",
+                }}
+              >
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isPlaying ? "bold" : "normal" }}>{track.title}</div>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>{track.artist}</div>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isPlaying ? "#ddd" : "#999" }}>{track.album}</div>
+                <div style={{ textAlign: "right", color: isPlaying ? "#ddd" : "#888" }}>{formatDuration(track.duration)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 下部ステータスバー */}
+      <div style={{ padding: "8px 16px", background: "#181818", borderTop: "1px solid #2d2d2d", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        {currentTrack ? (
+          <div>
+            再生中: <strong>{currentTrack.title}</strong> - {currentTrack.artist} ({formatDuration(currentTrack.duration)})
+          </div>
+        ) : (
+          <div style={{ color: "#666" }}>停止中</div>
+        )}
+      </div>
+    </div>
+  );
+}

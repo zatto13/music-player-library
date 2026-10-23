@@ -1,0 +1,20 @@
+# Node.js
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+
+# ローカルデータベース & キャッシュファイル
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# OS固有ファイル
+.DS_Store
+Thumbs.db
+
+# IDE / エディタ
+.vscode/
+.idea/
