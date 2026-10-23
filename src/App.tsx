@@ -15,7 +15,7 @@ interface ContextMenuState {
   visible: boolean;
   x: number;
   y: number;
-  track: Track | null;
+  targetTrack: Track | null;
 }
 
 export default function App() {
@@ -28,17 +28,24 @@ export default function App() {
   const [volume, setVolume] = useState(1);
   const [isScanning, setIsScanning] = useState(false);
 
-  // 選択中のアーティスト名（常に特定のアーティストを選択状態にする）
+  // 選択管理
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+
+  // 選択中のアーティスト
   const [selectedArtist, setSelectedArtist] = useState<string | null>(null);
 
+  // 右クリックメニュー
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
     y: 0,
-    track: null,
+    targetTrack: null,
   });
 
-  const [editingTrack, setEditingTrack] = useState<Track | null>(null);
+  // タグ編集モーダル用
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingTracks, setEditingTracks] = useState<Track[]>([]);
   const [editForm, setEditForm] = useState({ title: "", artist: "", album: "" });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -57,7 +64,7 @@ export default function App() {
     loadTracks();
   }, []);
 
-  // アーティスト一覧の集計（五十音・アルファベット順）
+  // アーティスト一覧の集計
   const artistList = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
@@ -69,7 +76,7 @@ export default function App() {
       .sort((a, b) => a.name.localeCompare(b.name, "ja"));
   }, [tracks]);
 
-  // トラック読み込み時や選択アーティストが消えた際、自動的に先頭のアーティストを選択
+  // 先頭アーティスト自動選択
   useEffect(() => {
     if (artistList.length > 0) {
       if (!selectedArtist || !artistList.some((a) => a.name === selectedArtist)) {
@@ -80,16 +87,15 @@ export default function App() {
     }
   }, [artistList, selectedArtist]);
 
-  // 選択中アーティストのトラックのみを抽出（全曲表示は行わない）
+  // 絞り込み済みトラック
   const filteredTracks = useMemo(() => {
     if (!selectedArtist) return [];
     return tracks.filter((t) => (t.artist || "Unknown Artist") === selectedArtist);
   }, [tracks, selectedArtist]);
 
-  // 再生位置の定期ポーリング
+  // 再生位置ポーリング
   useEffect(() => {
     if (!isPlaying || isSeeking) return;
-
     const interval = setInterval(async () => {
       try {
         const pos = await invoke<number>("get_playback_position");
@@ -98,10 +104,10 @@ export default function App() {
         console.error("Failed to get playback position:", err);
       }
     }, 250);
-
     return () => clearInterval(interval);
   }, [isPlaying, isSeeking]);
 
+  // 画面クリックでメニューを閉じる
   useEffect(() => {
     const handleClickOutside = () => {
       if (contextMenu.visible) {
@@ -125,6 +131,8 @@ export default function App() {
     try {
       await invoke("scan_directory", { dirPath: folderPath });
       await loadTracks();
+      setSelectedIds(new Set());
+      setLastSelectedIndex(null);
     } catch (err) {
       alert(`スキャンエラー: ${err}`);
     } finally {
@@ -150,12 +158,158 @@ export default function App() {
       }
       return;
     }
-
     try {
       const playing = await invoke<boolean>("toggle_play_pause");
       setIsPlaying(playing);
     } catch (err) {
       console.error("Toggle play/pause error:", err);
+    }
+  };
+
+  // 左クリックによる選択（通常 / Shift範囲選択 / Ctrl追加トグル）
+  const handleRowClick = (e: React.MouseEvent, index: number, track: Track) => {
+    if (e.shiftKey && lastSelectedIndex !== null) {
+      const start = Math.min(lastSelectedIndex, index);
+      const end = Math.max(lastSelectedIndex, index);
+      const nextSelected = new Set(selectedIds);
+      for (let i = start; i <= end; i++) {
+        nextSelected.add(filteredTracks[i].id);
+      }
+      setSelectedIds(nextSelected);
+    } else if (e.ctrlKey || e.metaKey) {
+      const nextSelected = new Set(selectedIds);
+      if (nextSelected.has(track.id)) {
+        nextSelected.delete(track.id);
+      } else {
+        nextSelected.add(track.id);
+      }
+      setSelectedIds(nextSelected);
+      setLastSelectedIndex(index);
+    } else {
+      setSelectedIds(new Set([track.id]));
+      setLastSelectedIndex(index);
+    }
+  };
+
+  // 右クリックメニューのトリガー
+  const handleContextMenu = (e: React.MouseEvent, index: number, track: Track) => {
+    e.preventDefault();
+
+    // 右クリックされた曲が選択されていなければ、その1曲だけを選択状態にする
+    if (!selectedIds.has(track.id)) {
+      setSelectedIds(new Set([track.id]));
+      setLastSelectedIndex(index);
+    }
+
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      targetTrack: track,
+    });
+  };
+
+  // 複数一括削除
+  const handleDeleteFromMenu = async () => {
+    const targetIds = Array.from(selectedIds);
+    if (targetIds.length === 0 && contextMenu.targetTrack) {
+      targetIds.push(contextMenu.targetTrack.id);
+    }
+    setContextMenu((prev) => ({ ...prev, visible: false }));
+
+    const confirmMsg =
+      targetIds.length === 1
+        ? `「${contextMenu.targetTrack?.title || "選択した曲"}」をライブラリから削除しますか？\n(※実ファイルは削除されません)`
+        : `選択中の ${targetIds.length} 曲をライブラリから削除しますか？\n(※実ファイルは削除されません)`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      for (const id of targetIds) {
+        await invoke("delete_track", { id });
+      }
+
+      const targetSet = new Set(targetIds);
+      setTracks((prev) => prev.filter((t) => !targetSet.has(t.id)));
+      setSelectedIds(new Set());
+      setLastSelectedIndex(null);
+
+      if (currentTrack && targetSet.has(currentTrack.id)) {
+        setIsPlaying(false);
+        setCurrentTrack(null);
+        setCurrentTime(0);
+      }
+    } catch (err) {
+      console.error("Delete error:", err);
+    }
+  };
+
+  // タグ編集モーダルを開く
+  const handleOpenEditModal = () => {
+    setContextMenu((prev) => ({ ...prev, visible: false }));
+
+    const targetList = filteredTracks.filter((t) => selectedIds.has(t.id));
+    if (targetList.length === 0 && contextMenu.targetTrack) {
+      targetList.push(contextMenu.targetTrack);
+    }
+    if (targetList.length === 0) return;
+
+    setEditingTracks(targetList);
+
+    if (targetList.length === 1) {
+      setEditForm({
+        title: targetList[0].title,
+        artist: targetList[0].artist,
+        album: targetList[0].album,
+      });
+    } else {
+      // 複数選択時：同じ値なら初期表示、異なれば空欄
+      const firstArtist = targetList[0].artist;
+      const firstAlbum = targetList[0].album;
+      const isSameArtist = targetList.every((t) => t.artist === firstArtist);
+      const isSameAlbum = targetList.every((t) => t.album === firstAlbum);
+
+      setEditForm({
+        title: "", // 複数はタイトル固定変更を避けるため空
+        artist: isSameArtist ? firstArtist : "",
+        album: isSameAlbum ? firstAlbum : "",
+      });
+    }
+
+    setIsEditing(true);
+  };
+
+  // タグ保存実行
+  const handleSaveTags = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (editingTracks.length === 0) return;
+    setIsSaving(true);
+
+    try {
+      const isMulti = editingTracks.length > 1;
+
+      for (const track of editingTracks) {
+        const newTitle = isMulti ? track.title : (editForm.title || track.title);
+        const newArtist = editForm.artist.trim() !== "" ? editForm.artist : track.artist;
+        const newAlbum = editForm.album.trim() !== "" ? editForm.album : track.album;
+
+        await invoke("update_track_tags", {
+          id: track.id,
+          filePath: track.file_path,
+          title: newTitle,
+          artist: newArtist,
+          album: newAlbum,
+        });
+      }
+
+      // 画面更新
+      await loadTracks();
+      setIsEditing(false);
+      setEditingTracks([]);
+    } catch (err) {
+      alert(`保存エラー: ${err}`);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -181,86 +335,6 @@ export default function App() {
       await invoke("set_volume", { volume: val });
     } catch (err) {
       console.error("Set volume error:", err);
-    }
-  };
-
-  const handleContextMenu = (e: React.MouseEvent, track: Track) => {
-    e.preventDefault();
-    setContextMenu({
-      visible: true,
-      x: e.clientX,
-      y: e.clientY,
-      track: track,
-    });
-  };
-
-  const handleDeleteFromMenu = async () => {
-    if (!contextMenu.track) return;
-    const target = contextMenu.track;
-    setContextMenu((prev) => ({ ...prev, visible: false }));
-
-    const confirmed = window.confirm(
-      `「${target.title}」をライブラリから削除しますか？\n(※実ファイルは削除されません)`
-    );
-    if (!confirmed) return;
-
-    try {
-      await invoke("delete_track", { id: target.id });
-      setTracks((prev) => prev.filter((t) => t.id !== target.id));
-      if (currentTrack?.id === target.id) {
-        setIsPlaying(false);
-        setCurrentTrack(null);
-        setCurrentTime(0);
-      }
-    } catch (err) {
-      console.error("Delete error:", err);
-    }
-  };
-
-  const handleOpenEditModal = () => {
-    if (!contextMenu.track) return;
-    setEditingTrack(contextMenu.track);
-    setEditForm({
-      title: contextMenu.track.title,
-      artist: contextMenu.track.artist,
-      album: contextMenu.track.album,
-    });
-    setContextMenu((prev) => ({ ...prev, visible: false }));
-  };
-
-  const handleSaveTags = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingTrack) return;
-    setIsSaving(true);
-
-    try {
-      await invoke("update_track_tags", {
-        id: editingTrack.id,
-        filePath: editingTrack.file_path,
-        title: editForm.title,
-        artist: editForm.artist,
-        album: editForm.album,
-      });
-
-      setTracks((prev) =>
-        prev.map((t) =>
-          t.id === editingTrack.id
-            ? { ...t, title: editForm.title, artist: editForm.artist, album: editForm.album }
-            : t
-        )
-      );
-
-      if (currentTrack?.id === editingTrack.id) {
-        setCurrentTrack((prev) =>
-          prev ? { ...prev, title: editForm.title, artist: editForm.artist, album: editForm.album } : null
-        );
-      }
-
-      setEditingTrack(null);
-    } catch (err) {
-      alert(`保存エラー: ${err}`);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -329,6 +403,7 @@ export default function App() {
         </button>
         <span style={{ fontSize: "12px", color: "#888" }}>
           {selectedArtist ? `${selectedArtist} (${filteredTracks.length} 曲)` : "0 トラック"}
+          {selectedIds.size > 0 && ` [${selectedIds.size} 件選択中]`}
         </span>
       </div>
 
@@ -362,13 +437,16 @@ export default function App() {
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-            {/* 「すべてのアーティスト」項目は除外 */}
             {artistList.map((item) => {
               const isSelected = selectedArtist === item.name;
               return (
                 <div
                   key={item.name}
-                  onClick={() => setSelectedArtist(item.name)}
+                  onClick={() => {
+                    setSelectedArtist(item.name);
+                    setSelectedIds(new Set());
+                    setLastSelectedIndex(null);
+                  }}
                   style={{
                     padding: "6px 12px",
                     fontSize: "12px",
@@ -447,12 +525,18 @@ export default function App() {
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const track = filteredTracks[virtualRow.index];
                 const isThisTrack = currentTrack?.id === track.id;
+                const isSelected = selectedIds.has(track.id);
+
+                let rowBg = virtualRow.index % 2 === 0 ? "#1e1e1e" : "#222222";
+                if (isSelected) rowBg = "#04395e";
+                if (isThisTrack) rowBg = "#094771";
 
                 return (
                   <div
                     key={track.id}
+                    onClick={(e) => handleRowClick(e, virtualRow.index, track)}
                     onDoubleClick={() => handlePlay(track)}
-                    onContextMenu={(e) => handleContextMenu(e, track)}
+                    onContextMenu={(e) => handleContextMenu(e, virtualRow.index, track)}
                     style={{
                       position: "absolute",
                       top: 0,
@@ -467,13 +551,11 @@ export default function App() {
                       fontSize: "12px",
                       cursor: "pointer",
                       userSelect: "none",
-                      background: isThisTrack
-                        ? "#094771"
-                        : virtualRow.index % 2 === 0
-                        ? "#1e1e1e"
-                        : "#222222",
-                      color: isThisTrack ? "#fff" : "#ccc",
+                      background: rowBg,
+                      color: isThisTrack || isSelected ? "#fff" : "#ccc",
                       borderBottom: "1px solid #282828",
+                      outline: isSelected ? "1px solid #007acc" : "none",
+                      outlineOffset: "-1px",
                     }}
                   >
                     <div
@@ -492,7 +574,7 @@ export default function App() {
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
-                        color: isThisTrack ? "#ddd" : "#999",
+                        color: isThisTrack || isSelected ? "#ddd" : "#999",
                       }}
                     >
                       {track.artist}
@@ -502,12 +584,12 @@ export default function App() {
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
-                        color: isThisTrack ? "#ddd" : "#999",
+                        color: isThisTrack || isSelected ? "#ddd" : "#999",
                       }}
                     >
                       {track.album}
                     </div>
-                    <div style={{ textAlign: "right", color: isThisTrack ? "#ddd" : "#888" }}>
+                    <div style={{ textAlign: "right", color: isThisTrack || isSelected ? "#ddd" : "#888" }}>
                       {formatDuration(track.duration)}
                     </div>
                   </div>
@@ -518,7 +600,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* 3. MusicBee風 トランスポート / 再生バー */}
+      {/* 3. トランスポート / 再生バー */}
       <div
         style={{
           flexShrink: 0,
@@ -652,7 +734,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* 右クリックコンテキストメニュー */}
+      {/* 4. 右クリックメニュー */}
       {contextMenu.visible && (
         <div
           onClick={(e) => e.stopPropagation()}
@@ -666,28 +748,30 @@ export default function App() {
             borderRadius: "4px",
             zIndex: 1000,
             padding: "4px 0",
-            minWidth: "150px",
+            minWidth: "160px",
             fontSize: "12px",
           }}
         >
-          <div
-            onClick={() => {
-              if (contextMenu.track) handlePlay(contextMenu.track);
-              setContextMenu((prev) => ({ ...prev, visible: false }));
-            }}
-            style={{ padding: "6px 14px", cursor: "pointer", color: "#eee" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            再生
-          </div>
+          {selectedIds.size <= 1 && contextMenu.targetTrack && (
+            <div
+              onClick={() => {
+                if (contextMenu.targetTrack) handlePlay(contextMenu.targetTrack);
+                setContextMenu((prev) => ({ ...prev, visible: false }));
+              }}
+              style={{ padding: "6px 14px", cursor: "pointer", color: "#eee" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              再生
+            </div>
+          )}
           <div
             onClick={handleOpenEditModal}
             style={{ padding: "6px 14px", cursor: "pointer", color: "#eee" }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            タグを編集...
+            {selectedIds.size > 1 ? `タグを一括編集 (${selectedIds.size} 件)...` : "タグを編集..."}
           </div>
           <div style={{ height: "1px", background: "#3c3c3c", margin: "4px 0" }} />
           <div
@@ -696,13 +780,13 @@ export default function App() {
             onMouseEnter={(e) => (e.currentTarget.style.background = "#5a1d1d")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            ライブラリから削除
+            {selectedIds.size > 1 ? `ライブラリから削除 (${selectedIds.size} 件)` : "ライブラリから削除"}
           </div>
         </div>
       )}
 
-      {/* タグ編集ウィンドウ */}
-      {editingTrack && (
+      {/* 5. タグ編集モーダルウィンドウ（単一 / 一括対応） */}
+      {isEditing && (
         <div
           style={{
             position: "fixed",
@@ -722,7 +806,7 @@ export default function App() {
               background: "#252526",
               border: "1px solid #454545",
               borderRadius: "6px",
-              width: "420px",
+              width: "440px",
               boxShadow: "0 8px 24px rgba(0,0,0,0.8)",
               display: "flex",
               flexDirection: "column",
@@ -741,9 +825,9 @@ export default function App() {
                 alignItems: "center",
               }}
             >
-              <span>タグ情報の編集</span>
+              <span>{editingTracks.length > 1 ? `タグの一括編集 (${editingTracks.length} 曲)` : "タグ情報の編集"}</span>
               <span
-                onClick={() => setEditingTrack(null)}
+                onClick={() => setIsEditing(false)}
                 style={{ cursor: "pointer", color: "#888", fontSize: "16px" }}
               >
                 ✕
@@ -754,28 +838,36 @@ export default function App() {
               onSubmit={handleSaveTags}
               style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}
             >
+              {/* タイトル入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                <label style={{ fontSize: "11px", color: "#aaa" }}>タイトル</label>
+                <label style={{ fontSize: "11px", color: "#aaa" }}>
+                  タイトル {editingTracks.length > 1 && "(複数選択時は変更不可)"}
+                </label>
                 <input
                   type="text"
-                  value={editForm.title}
+                  value={editingTracks.length > 1 ? "<複数値>" : editForm.title}
+                  disabled={editingTracks.length > 1}
                   onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
                   style={{
                     padding: "6px 8px",
-                    background: "#3c3c3c",
+                    background: editingTracks.length > 1 ? "#2a2a2a" : "#3c3c3c",
                     border: "1px solid #555",
-                    color: "#fff",
+                    color: editingTracks.length > 1 ? "#777" : "#fff",
                     borderRadius: "3px",
                     fontSize: "13px",
                   }}
-                  required
+                  required={editingTracks.length === 1}
                 />
               </div>
 
+              {/* アーティスト入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                <label style={{ fontSize: "11px", color: "#aaa" }}>アーティスト</label>
+                <label style={{ fontSize: "11px", color: "#aaa" }}>
+                  アーティスト {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
+                </label>
                 <input
                   type="text"
+                  placeholder={editingTracks.length > 1 ? "<現状を維持>" : ""}
                   value={editForm.artist}
                   onChange={(e) => setEditForm({ ...editForm, artist: e.target.value })}
                   style={{
@@ -786,14 +878,17 @@ export default function App() {
                     borderRadius: "3px",
                     fontSize: "13px",
                   }}
-                  required
                 />
               </div>
 
+              {/* アルバム入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                <label style={{ fontSize: "11px", color: "#aaa" }}>アルバム</label>
+                <label style={{ fontSize: "11px", color: "#aaa" }}>
+                  アルバム {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
+                </label>
                 <input
                   type="text"
+                  placeholder={editingTracks.length > 1 ? "<現状を維持>" : ""}
                   value={editForm.album}
                   onChange={(e) => setEditForm({ ...editForm, album: e.target.value })}
                   style={{
@@ -804,18 +899,19 @@ export default function App() {
                     borderRadius: "3px",
                     fontSize: "13px",
                   }}
-                  required
                 />
               </div>
 
-              <div style={{ fontSize: "10px", color: "#777", wordBreak: "break-all", marginTop: "4px" }}>
-                ファイル: {editingTrack.file_path}
-              </div>
+              {editingTracks.length === 1 && (
+                <div style={{ fontSize: "10px", color: "#777", wordBreak: "break-all", marginTop: "4px" }}>
+                  ファイル: {editingTracks[0].file_path}
+                </div>
+              )}
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
                 <button
                   type="button"
-                  onClick={() => setEditingTrack(null)}
+                  onClick={() => setIsEditing(false)}
                   style={{
                     padding: "6px 14px",
                     background: "#3c3c3c",
