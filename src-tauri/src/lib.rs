@@ -1,12 +1,11 @@
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::items::ItemKey;
-use lofty::tag::{Accessor, Tag, TagExt, TagItem};
+use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagItem};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::fs::{create_dir_all, File};
 use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +20,7 @@ pub struct Track {
     pub file_path: String,
     pub title: String,
     pub artist: String,
-    pub album_artist: String, // ← 追加
+    pub album_artist: String,
     pub album: String,
     pub genre: String,
     pub duration: u32,
@@ -101,9 +100,8 @@ fn start_scan_directory(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Unknown Artist".to_string());
 
-                // アルバムアーティストの取得（なければアーティスト名でフォールバック）
                 let album_artist = tag
-                    .and_then(|t| t.get_string(&ItemKey::AlbumArtist))
+                    .and_then(|t| t.get_string(ItemKey::AlbumArtist))
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| artist.clone());
 
@@ -342,8 +340,7 @@ fn update_track_tags(
         tag.set_album(album.clone());
         tag.set_genre(genre.clone());
 
-        // アルバムアーティストのタグ書き込み
-        tag.insert_item(TagItem::new(
+        tag.insert(TagItem::new(
             ItemKey::AlbumArtist,
             lofty::tag::ItemValue::Text(album_artist.clone()),
         ));
@@ -404,7 +401,6 @@ pub fn run() {
                 "ALTER TABLE tracks ADD COLUMN genre TEXT NOT NULL DEFAULT 'Unknown Genre'",
                 [],
             );
-            // 既存DBに album_artist 列がなければ自動追加
             let _ = conn.execute(
                 "ALTER TABLE tracks ADD COLUMN album_artist TEXT NOT NULL DEFAULT ''",
                 [],

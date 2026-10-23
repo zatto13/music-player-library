@@ -8,6 +8,7 @@ interface Track {
   file_path: string;
   title: string;
   artist: string;
+  album_artist: string;
   album: string;
   genre: string;
   duration: number;
@@ -25,7 +26,7 @@ interface ScanProgressPayload {
   is_finished: boolean;
 }
 
-type ViewMode = "artist" | "album";
+type ViewMode = "album_artist" | "artist" | "album";
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -40,11 +41,11 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [scannedCount, setScannedCount] = useState(0);
 
-  // 表示モードの切り替え ("artist" または "album")
-  const [viewMode, setViewMode] = useState<ViewMode>("artist");
+  // 表示モードの切り替え ("album_artist" | "artist" | "album")
+  const [viewMode, setViewMode] = useState<ViewMode>("album_artist");
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
 
-  // 選択中のキー（アーティスト名 または アルバム名）
+  // 選択中のキー
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // 選択管理
@@ -62,7 +63,13 @@ export default function App() {
   // タグ編集モーダル用
   const [isEditing, setIsEditing] = useState(false);
   const [editingTracks, setEditingTracks] = useState<Track[]>([]);
-  const [editForm, setEditForm] = useState({ title: "", artist: "", album: "", genre: "" });
+  const [editForm, setEditForm] = useState({
+    title: "",
+    artist: "",
+    album_artist: "",
+    album: "",
+    genre: "",
+  });
   const [isSaving, setIsSaving] = useState(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
@@ -79,7 +86,6 @@ export default function App() {
   useEffect(() => {
     loadTracks();
 
-    // バックグラウンドスキャンの進捗イベントを購読
     const unlistenPromise = listen<ScanProgressPayload>("scan-progress", (event) => {
       setScannedCount(event.payload.scanned);
       loadTracks();
@@ -94,14 +100,18 @@ export default function App() {
     };
   }, []);
 
-  // アーティストまたはアルバム一覧の集計
+  // アルバムアーティスト / アーティスト / アルバム一覧の集計
   const paneItems = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
-      const name =
-        viewMode === "artist"
-          ? track.artist || "Unknown Artist"
-          : track.album || "Unknown Album";
+      let name = "";
+      if (viewMode === "album_artist") {
+        name = track.album_artist || track.artist || "Unknown Album Artist";
+      } else if (viewMode === "artist") {
+        name = track.artist || "Unknown Artist";
+      } else {
+        name = track.album || "Unknown Album";
+      }
       counts.set(name, (counts.get(name) || 0) + 1);
     }
     return Array.from(counts.entries())
@@ -120,11 +130,18 @@ export default function App() {
     }
   }, [paneItems, selectedKey]);
 
-  // 選択中のアーティストまたはアルバムで絞り込み
+  // 選択中のキーで絞り込み
   const filteredTracks = useMemo(() => {
     if (!selectedKey) return [];
     return tracks.filter((t) => {
-      const val = viewMode === "artist" ? t.artist || "Unknown Artist" : t.album || "Unknown Album";
+      let val = "";
+      if (viewMode === "album_artist") {
+        val = t.album_artist || t.artist || "Unknown Album Artist";
+      } else if (viewMode === "artist") {
+        val = t.artist || "Unknown Artist";
+      } else {
+        val = t.album || "Unknown Album";
+      }
       return val === selectedKey;
     });
   }, [tracks, selectedKey, viewMode]);
@@ -143,15 +160,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isPlaying, isSeeking]);
 
-  // 画面クリックでメニューを閉じる
   useEffect(() => {
     const handleClickOutside = () => {
-      if (contextMenu.visible) {
-        setContextMenu((prev) => ({ ...prev, visible: false }));
-      }
-      if (isViewMenuOpen) {
-        setIsViewMenuOpen(false);
-      }
+      if (contextMenu.visible) setContextMenu((prev) => ({ ...prev, visible: false }));
+      if (isViewMenuOpen) setIsViewMenuOpen(false);
     };
     window.addEventListener("click", handleClickOutside);
     return () => window.removeEventListener("click", handleClickOutside);
@@ -189,9 +201,7 @@ export default function App() {
 
   const handleTogglePlayPause = async () => {
     if (!currentTrack) {
-      if (filteredTracks.length > 0) {
-        handlePlay(filteredTracks[0]);
-      }
+      if (filteredTracks.length > 0) handlePlay(filteredTracks[0]);
       return;
     }
     try {
@@ -207,17 +217,12 @@ export default function App() {
       const start = Math.min(lastSelectedIndex, index);
       const end = Math.max(lastSelectedIndex, index);
       const nextSelected = new Set(selectedIds);
-      for (let i = start; i <= end; i++) {
-        nextSelected.add(filteredTracks[i].id);
-      }
+      for (let i = start; i <= end; i++) nextSelected.add(filteredTracks[i].id);
       setSelectedIds(nextSelected);
     } else if (e.ctrlKey || e.metaKey) {
       const nextSelected = new Set(selectedIds);
-      if (nextSelected.has(track.id)) {
-        nextSelected.delete(track.id);
-      } else {
-        nextSelected.add(track.id);
-      }
+      if (nextSelected.has(track.id)) nextSelected.delete(track.id);
+      else nextSelected.add(track.id);
       setSelectedIds(nextSelected);
       setLastSelectedIndex(index);
     } else {
@@ -232,19 +237,12 @@ export default function App() {
       setSelectedIds(new Set([track.id]));
       setLastSelectedIndex(index);
     }
-    setContextMenu({
-      visible: true,
-      x: e.clientX,
-      y: e.clientY,
-      targetTrack: track,
-    });
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, targetTrack: track });
   };
 
   const handleDeleteFromMenu = async () => {
     const targetIds = Array.from(selectedIds);
-    if (targetIds.length === 0 && contextMenu.targetTrack) {
-      targetIds.push(contextMenu.targetTrack.id);
-    }
+    if (targetIds.length === 0 && contextMenu.targetTrack) targetIds.push(contextMenu.targetTrack.id);
     setContextMenu((prev) => ({ ...prev, visible: false }));
 
     const confirmMsg =
@@ -255,10 +253,7 @@ export default function App() {
     if (!window.confirm(confirmMsg)) return;
 
     try {
-      for (const id of targetIds) {
-        await invoke("delete_track", { id });
-      }
-
+      for (const id of targetIds) await invoke("delete_track", { id });
       const targetSet = new Set(targetIds);
       setTracks((prev) => prev.filter((t) => !targetSet.has(t.id)));
       setSelectedIds(new Set());
@@ -276,11 +271,8 @@ export default function App() {
 
   const handleOpenEditModal = () => {
     setContextMenu((prev) => ({ ...prev, visible: false }));
-
     const targetList = filteredTracks.filter((t) => selectedIds.has(t.id));
-    if (targetList.length === 0 && contextMenu.targetTrack) {
-      targetList.push(contextMenu.targetTrack);
-    }
+    if (targetList.length === 0 && contextMenu.targetTrack) targetList.push(contextMenu.targetTrack);
     if (targetList.length === 0) return;
 
     setEditingTracks(targetList);
@@ -289,25 +281,23 @@ export default function App() {
       setEditForm({
         title: targetList[0].title,
         artist: targetList[0].artist,
+        album_artist: targetList[0].album_artist,
         album: targetList[0].album,
         genre: targetList[0].genre,
       });
     } else {
       const firstArtist = targetList[0].artist;
+      const firstAlbumArtist = targetList[0].album_artist;
       const firstAlbum = targetList[0].album;
       const firstGenre = targetList[0].genre;
-      const isSameArtist = targetList.every((t) => t.artist === firstArtist);
-      const isSameAlbum = targetList.every((t) => t.album === firstAlbum);
-      const isSameGenre = targetList.every((t) => t.genre === firstGenre);
-
       setEditForm({
         title: "",
-        artist: isSameArtist ? firstArtist : "",
-        album: isSameAlbum ? firstAlbum : "",
-        genre: isSameGenre ? firstGenre : "",
+        artist: targetList.every((t) => t.artist === firstArtist) ? firstArtist : "",
+        album_artist: targetList.every((t) => t.album_artist === firstAlbumArtist) ? firstAlbumArtist : "",
+        album: targetList.every((t) => t.album === firstAlbum) ? firstAlbum : "",
+        genre: targetList.every((t) => t.genre === firstGenre) ? firstGenre : "",
       });
     }
-
     setIsEditing(true);
   };
 
@@ -318,23 +308,17 @@ export default function App() {
 
     try {
       const isMulti = editingTracks.length > 1;
-
       for (const track of editingTracks) {
-        const newTitle = isMulti ? track.title : (editForm.title || track.title);
-        const newArtist = editForm.artist.trim() !== "" ? editForm.artist : track.artist;
-        const newAlbum = editForm.album.trim() !== "" ? editForm.album : track.album;
-        const newGenre = editForm.genre.trim() !== "" ? editForm.genre : track.genre;
-
         await invoke("update_track_tags", {
           id: track.id,
           filePath: track.file_path,
-          title: newTitle,
-          artist: newArtist,
-          album: newAlbum,
-          genre: newGenre,
+          title: isMulti ? track.title : (editForm.title || track.title),
+          artist: editForm.artist.trim() !== "" ? editForm.artist : track.artist,
+          albumArtist: editForm.album_artist.trim() !== "" ? editForm.album_artist : track.album_artist,
+          album: editForm.album.trim() !== "" ? editForm.album : track.album,
+          genre: editForm.genre.trim() !== "" ? editForm.genre : track.genre,
         });
       }
-
       await loadTracks();
       setIsEditing(false);
       setEditingTracks([]);
@@ -372,8 +356,7 @@ export default function App() {
 
   const getPrimaryGenre = (genreStr: string) => {
     if (!genreStr) return "";
-    const parts = genreStr.split(/[;；]/);
-    return parts[0]?.trim() || "";
+    return genreStr.split(/[;；]/)[0]?.trim() || "";
   };
 
   const formatDuration = (sec: number) => {
@@ -385,6 +368,17 @@ export default function App() {
 
   const duration = currentTrack?.duration || 0;
   const progressRatio = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  const getViewModeLabel = (mode: ViewMode) => {
+    switch (mode) {
+      case "album_artist":
+        return "アルバムアーティスト";
+      case "artist":
+        return "アーティスト";
+      case "album":
+        return "アルバム";
+    }
+  };
 
   return (
     <div
@@ -450,7 +444,7 @@ export default function App() {
         {/* 左ペイン: 切り替え対応一覧 */}
         <div
           style={{
-            width: "220px",
+            width: "230px",
             flexShrink: 0,
             background: "#181818",
             borderRight: "1px solid #2d2d2d",
@@ -460,6 +454,7 @@ export default function App() {
             position: "relative",
           }}
         >
+          {/* ペインヘッダー */}
           <div
             onClick={(e) => {
               e.stopPropagation();
@@ -482,11 +477,12 @@ export default function App() {
             onMouseLeave={(e) => (e.currentTarget.style.background = "#222222")}
           >
             <span>
-              {viewMode === "artist" ? "アーティスト" : "アルバム"} ({paneItems.length})
+              {getViewModeLabel(viewMode)} ({paneItems.length})
             </span>
             <span style={{ fontSize: "9px", color: "#777" }}>▾</span>
           </div>
 
+          {/* 切り替えドロップダウンメニュー */}
           {isViewMenuOpen && (
             <div
               onClick={(e) => e.stopPropagation()}
@@ -500,10 +496,27 @@ export default function App() {
                 borderRadius: "4px",
                 zIndex: 1100,
                 padding: "4px 0",
-                minWidth: "140px",
+                minWidth: "160px",
                 fontSize: "12px",
               }}
             >
+              <div
+                onClick={() => {
+                  setViewMode("album_artist");
+                  setIsViewMenuOpen(false);
+                  setSelectedIds(new Set());
+                }}
+                style={{
+                  padding: "6px 14px",
+                  cursor: "pointer",
+                  color: viewMode === "album_artist" ? "#569cd6" : "#eee",
+                  fontWeight: viewMode === "album_artist" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {viewMode === "album_artist" ? "✓ アルバムアーティスト" : " アルバムアーティスト"}
+              </div>
               <div
                 onClick={() => {
                   setViewMode("artist");
@@ -541,6 +554,7 @@ export default function App() {
             </div>
           )}
 
+          {/* アイテムリスト */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
             {paneItems.map((item) => {
               const isSelected = selectedKey === item.name;
@@ -595,7 +609,8 @@ export default function App() {
             style={{
               flexShrink: 0,
               display: "grid",
-              gridTemplateColumns: "3fr 2fr 2fr 1.5fr 70px",
+              // タイトル / アーティスト / アルバムアーティスト / アルバム / ジャンル / 長さ (6列)
+              gridTemplateColumns: "3fr 2fr 2fr 2fr 1.5fr 70px",
               padding: "6px 12px",
               background: "#2d2d2d",
               borderBottom: "1px solid #3c3c3c",
@@ -606,6 +621,7 @@ export default function App() {
           >
             <div>タイトル</div>
             <div>アーティスト</div>
+            <div>アルバムアーティスト</div>
             <div>アルバム</div>
             <div>ジャンル</div>
             <div style={{ textAlign: "right" }}>長さ</div>
@@ -651,7 +667,7 @@ export default function App() {
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                       display: "grid",
-                      gridTemplateColumns: "3fr 2fr 2fr 1.5fr 70px",
+                      gridTemplateColumns: "3fr 2fr 2fr 2fr 1.5fr 70px",
                       alignItems: "center",
                       padding: "0 12px",
                       fontSize: "12px",
@@ -664,46 +680,20 @@ export default function App() {
                       outlineOffset: "-1px",
                     }}
                   >
-                    <div
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontWeight: isThisTrack ? "bold" : "normal",
-                      }}
-                    >
+                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isThisTrack ? "bold" : "normal" }}>
                       {isThisTrack && (isPlaying ? "▶ " : "❚❚ ")}
                       {track.title}
                     </div>
-                    <div
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        color: isThisTrack || isSelected ? "#ddd" : "#999",
-                      }}
-                    >
+                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
                       {track.artist}
                     </div>
-                    <div
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        color: isThisTrack || isSelected ? "#ddd" : "#999",
-                      }}
-                    >
+                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
+                      {track.album_artist || "-"}
+                    </div>
+                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
                       {track.album}
                     </div>
-                    <div
-                      title={track.genre}
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        color: isThisTrack || isSelected ? "#ddd" : "#999",
-                      }}
-                    >
+                    <div title={track.genre} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isThisTrack || isSelected ? "#ddd" : "#999" }}>
                       {getPrimaryGenre(track.genre)}
                     </div>
                     <div style={{ textAlign: "right", color: isThisTrack || isSelected ? "#ddd" : "#888" }}>
@@ -774,38 +764,9 @@ export default function App() {
           </div>
         </div>
 
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-            minWidth: 0,
-            gap: "3px",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              fontSize: "11px",
-              color: "#ccc",
-              position: "relative",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: "50%",
-                transform: "translateX(-50%)",
-                maxWidth: "60%",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                textAlign: "center",
-              }}
-            >
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0, gap: "3px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", color: "#ccc", position: "relative" }}>
+            <div style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center" }}>
               {currentTrack ? (
                 <span>
                   <strong style={{ color: "#fff" }}>{currentTrack.artist}</strong> - {currentTrack.title}
@@ -814,18 +775,8 @@ export default function App() {
                 <span style={{ color: "#666" }}>停止中</span>
               )}
             </div>
-
             <div style={{ width: "80px" }} />
-
-            <div
-              style={{
-                fontSize: "11px",
-                color: "#9da5b4",
-                fontVariantNumeric: "tabular-nums",
-                textAlign: "right",
-                userSelect: "none",
-              }}
-            >
+            <div style={{ fontSize: "11px", color: "#9da5b4", fontVariantNumeric: "tabular-nums", textAlign: "right", userSelect: "none" }}>
               {formatDuration(currentTime)} / {formatDuration(duration)}
             </div>
           </div>
@@ -902,7 +853,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 5. タグ編集モーダルウィンドウ */}
+      {/* 5. タグ編集モーダル */}
       {isEditing && (
         <div
           style={{
@@ -943,18 +894,12 @@ export default function App() {
               }}
             >
               <span>{editingTracks.length > 1 ? `タグの一括編集 (${editingTracks.length} 曲)` : "タグ情報の編集"}</span>
-              <span
-                onClick={() => setIsEditing(false)}
-                style={{ cursor: "pointer", color: "#888", fontSize: "16px" }}
-              >
+              <span onClick={() => setIsEditing(false)} style={{ cursor: "pointer", color: "#888", fontSize: "16px" }}>
                 ✕
               </span>
             </div>
 
-            <form
-              onSubmit={handleSaveTags}
-              style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}
-            >
+            <form onSubmit={handleSaveTags} style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>
                   タイトル {editingTracks.length > 1 && "(複数選択時は変更不可)"}
@@ -985,14 +930,21 @@ export default function App() {
                   placeholder={editingTracks.length > 1 ? "<現状を維持>" : ""}
                   value={editForm.artist}
                   onChange={(e) => setEditForm({ ...editForm, artist: e.target.value })}
-                  style={{
-                    padding: "6px 8px",
-                    background: "#3c3c3c",
-                    border: "1px solid #555",
-                    color: "#fff",
-                    borderRadius: "3px",
-                    fontSize: "13px",
-                  }}
+                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
+                />
+              </div>
+
+              {/* アルバムアーティスト入力欄 */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                <label style={{ fontSize: "11px", color: "#aaa" }}>
+                  アルバムアーティスト {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
+                </label>
+                <input
+                  type="text"
+                  placeholder={editingTracks.length > 1 ? "<現状を維持>" : ""}
+                  value={editForm.album_artist}
+                  onChange={(e) => setEditForm({ ...editForm, album_artist: e.target.value })}
+                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
                 />
               </div>
 
@@ -1005,14 +957,7 @@ export default function App() {
                   placeholder={editingTracks.length > 1 ? "<現状を維持>" : ""}
                   value={editForm.album}
                   onChange={(e) => setEditForm({ ...editForm, album: e.target.value })}
-                  style={{
-                    padding: "6px 8px",
-                    background: "#3c3c3c",
-                    border: "1px solid #555",
-                    color: "#fff",
-                    borderRadius: "3px",
-                    fontSize: "13px",
-                  }}
+                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
                 />
               </div>
 
@@ -1025,14 +970,7 @@ export default function App() {
                   placeholder={editingTracks.length > 1 ? "<現状を維持>" : "例: Rock; J-Pop; Anime"}
                   value={editForm.genre}
                   onChange={(e) => setEditForm({ ...editForm, genre: e.target.value })}
-                  style={{
-                    padding: "6px 8px",
-                    background: "#3c3c3c",
-                    border: "1px solid #555",
-                    color: "#fff",
-                    borderRadius: "3px",
-                    fontSize: "13px",
-                  }}
+                  style={{ padding: "6px 8px", background: "#3c3c3c", border: "1px solid #555", color: "#fff", borderRadius: "3px", fontSize: "13px" }}
                 />
               </div>
 
@@ -1046,28 +984,14 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setIsEditing(false)}
-                  style={{
-                    padding: "6px 14px",
-                    background: "#3c3c3c",
-                    border: "1px solid #555",
-                    color: "#ccc",
-                    borderRadius: "3px",
-                    cursor: "pointer",
-                  }}
+                  style={{ padding: "6px 14px", background: "#3c3c3c", border: "1px solid #555", color: "#ccc", borderRadius: "3px", cursor: "pointer" }}
                 >
                   キャンセル
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  style={{
-                    padding: "6px 16px",
-                    background: "#0e639c",
-                    border: "none",
-                    color: "#fff",
-                    borderRadius: "3px",
-                    cursor: "pointer",
-                  }}
+                  style={{ padding: "6px 16px", background: "#0e639c", border: "none", color: "#fff", borderRadius: "3px", cursor: "pointer" }}
                 >
                   {isSaving ? "保存中..." : "保存"}
                 </button>
