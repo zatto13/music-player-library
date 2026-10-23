@@ -35,6 +35,7 @@ export default function App() {
 
   // 選択中のアーティスト
   const [selectedArtist, setSelectedArtist] = useState<string | null>(null);
+  const [selectedAlbum, setSelectedAlbum] = useState<string | null>(null);
 
   // 右クリックメニュー
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -66,11 +67,11 @@ export default function App() {
   }, []);
 
   // アーティスト一覧の集計
-  const artistList = useMemo(() => {
+  const albumList = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
-      const artist = track.artist || "Unknown Artist";
-      counts.set(artist, (counts.get(artist) || 0) + 1);
+      const album = track.album || "Unknown Album";
+      counts.set(album, (counts.get(album) || 0) + 1);
     }
     return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
@@ -79,20 +80,20 @@ export default function App() {
 
   // 先頭アーティスト自動選択
   useEffect(() => {
-    if (artistList.length > 0) {
-      if (!selectedArtist || !artistList.some((a) => a.name === selectedArtist)) {
-        setSelectedArtist(artistList[0].name);
+    if (albumList.length > 0) {
+      if (!selectedAlbum || !albumList.some((a) => a.name === selectedAlbum)) {
+        setSelectedAlbum(albumList[0].name);
       }
     } else {
-      setSelectedArtist(null);
+      setSelectedAlbum(null);
     }
-  }, [artistList, selectedArtist]);
+  }, [albumList, selectedAlbum]);
 
   // 絞り込み済みトラック
   const filteredTracks = useMemo(() => {
-    if (!selectedArtist) return [];
-    return tracks.filter((t) => (t.artist || "Unknown Artist") === selectedArtist);
-  }, [tracks, selectedArtist]);
+    if (!selectedAlbum) return [];
+    return tracks.filter((t) => (t.artist || "Unknown Album") === selectedAlbum);
+  }, [tracks, selectedAlbum]);
 
   // 再生位置ポーリング
   useEffect(() => {
@@ -417,14 +418,14 @@ export default function App() {
           {isScanning ? "スキャン中..." : "スキャン"}
         </button>
         <span style={{ fontSize: "12px", color: "#888" }}>
-          {selectedArtist ? `${selectedArtist} (${filteredTracks.length} 曲)` : "0 トラック"}
+          {selectedAlbum ? `${selectedAlbum} (${filteredTracks.length} 曲)` : "0 トラック"}
           {selectedIds.size > 0 && ` [${selectedIds.size} 件選択中]`}
         </span>
       </div>
 
       {/* 2. メイン領域 */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-        {/* 左ペイン: アーティスト一覧 */}
+        {/* 左ペイン: アルバム一覧 */}
         <div
           style={{
             width: "220px",
@@ -448,17 +449,17 @@ export default function App() {
               letterSpacing: "0.5px",
             }}
           >
-            アーティスト ({artistList.length})
+            アルバム ({albumList.length})
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-            {artistList.map((item) => {
-              const isSelected = selectedArtist === item.name;
+            {albumList.map((item) => {
+              const isSelected = selectedAlbum === item.name;
               return (
                 <div
                   key={item.name}
                   onClick={() => {
-                    setSelectedArtist(item.name);
+                    setSelectedAlbum(item.name);
                     setSelectedIds(new Set());
                     setLastSelectedIndex(null);
                   }}
