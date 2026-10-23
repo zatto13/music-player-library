@@ -19,6 +19,8 @@ interface ContextMenuState {
   targetTrack: Track | null;
 }
 
+type ViewMode = "artist" | "album";
+
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [folderPath, setFolderPath] = useState("");
@@ -29,13 +31,16 @@ export default function App() {
   const [volume, setVolume] = useState(1);
   const [isScanning, setIsScanning] = useState(false);
 
+  // 表示モードの切り替え ("artist" または "album")
+  const [viewMode, setViewMode] = useState<ViewMode>("artist");
+  const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
+
+  // 選択中のキー（アーティスト名 または アルバム名）
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
   // 選択管理
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
-
-  // 選択中のアーティスト
-  const [selectedArtist, setSelectedArtist] = useState<string | null>(null);
-  const [selectedAlbum, setSelectedAlbum] = useState<string | null>(null);
 
   // 右クリックメニュー
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -66,34 +71,40 @@ export default function App() {
     loadTracks();
   }, []);
 
-  // アーティスト一覧の集計
-  const albumList = useMemo(() => {
+  // アーティストまたはアルバム一覧の集計
+  const paneItems = useMemo(() => {
     const counts = new Map<string, number>();
     for (const track of tracks) {
-      const album = track.album || "Unknown Album";
-      counts.set(album, (counts.get(album) || 0) + 1);
+      const name =
+        viewMode === "artist"
+          ? track.artist || "Unknown Artist"
+          : track.album || "Unknown Album";
+      counts.set(name, (counts.get(name) || 0) + 1);
     }
     return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => a.name.localeCompare(b.name, "ja"));
-  }, [tracks]);
+  }, [tracks, viewMode]);
 
-  // 先頭アーティスト自動選択
+  // モード切り替え時やデータ読み込み時に先頭項目を自動選択
   useEffect(() => {
-    if (albumList.length > 0) {
-      if (!selectedAlbum || !albumList.some((a) => a.name === selectedAlbum)) {
-        setSelectedAlbum(albumList[0].name);
+    if (paneItems.length > 0) {
+      if (!selectedKey || !paneItems.some((item) => item.name === selectedKey)) {
+        setSelectedKey(paneItems[0].name);
       }
     } else {
-      setSelectedAlbum(null);
+      setSelectedKey(null);
     }
-  }, [albumList, selectedAlbum]);
+  }, [paneItems, selectedKey]);
 
-  // 絞り込み済みトラック
+  // 選択中のアーティストまたはアルバムで絞り込み
   const filteredTracks = useMemo(() => {
-    if (!selectedAlbum) return [];
-    return tracks.filter((t) => (t.artist || "Unknown Album") === selectedAlbum);
-  }, [tracks, selectedAlbum]);
+    if (!selectedKey) return [];
+    return tracks.filter((t) => {
+      const val = viewMode === "artist" ? t.artist || "Unknown Artist" : t.album || "Unknown Album";
+      return val === selectedKey;
+    });
+  }, [tracks, selectedKey, viewMode]);
 
   // 再生位置ポーリング
   useEffect(() => {
@@ -115,10 +126,13 @@ export default function App() {
       if (contextMenu.visible) {
         setContextMenu((prev) => ({ ...prev, visible: false }));
       }
+      if (isViewMenuOpen) {
+        setIsViewMenuOpen(false);
+      }
     };
     window.addEventListener("click", handleClickOutside);
     return () => window.removeEventListener("click", handleClickOutside);
-  }, [contextMenu.visible]);
+  }, [contextMenu.visible, isViewMenuOpen]);
 
   const rowVirtualizer = useVirtualizer({
     count: filteredTracks.length,
@@ -168,7 +182,6 @@ export default function App() {
     }
   };
 
-  // 左クリックによる選択（通常 / Shift範囲選択 / Ctrl追加トグル）
   const handleRowClick = (e: React.MouseEvent, index: number, track: Track) => {
     if (e.shiftKey && lastSelectedIndex !== null) {
       const start = Math.min(lastSelectedIndex, index);
@@ -193,16 +206,12 @@ export default function App() {
     }
   };
 
-  // 右クリックメニューのトリガー
   const handleContextMenu = (e: React.MouseEvent, index: number, track: Track) => {
     e.preventDefault();
-
-    // 右クリックされた曲が選択されていなければ、その1曲だけを選択状態にする
     if (!selectedIds.has(track.id)) {
       setSelectedIds(new Set([track.id]));
       setLastSelectedIndex(index);
     }
-
     setContextMenu({
       visible: true,
       x: e.clientX,
@@ -211,7 +220,6 @@ export default function App() {
     });
   };
 
-  // 複数一括削除
   const handleDeleteFromMenu = async () => {
     const targetIds = Array.from(selectedIds);
     if (targetIds.length === 0 && contextMenu.targetTrack) {
@@ -246,7 +254,6 @@ export default function App() {
     }
   };
 
-  // タグ編集モーダルを開く
   const handleOpenEditModal = () => {
     setContextMenu((prev) => ({ ...prev, visible: false }));
 
@@ -266,7 +273,6 @@ export default function App() {
         genre: targetList[0].genre,
       });
     } else {
-      // 複数選択時：同じ値なら初期表示、異なれば空欄
       const firstArtist = targetList[0].artist;
       const firstAlbum = targetList[0].album;
       const firstGenre = targetList[0].genre;
@@ -275,7 +281,7 @@ export default function App() {
       const isSameGenre = targetList.every((t) => t.genre === firstGenre);
 
       setEditForm({
-        title: "", // 複数はタイトル固定変更を避けるため空
+        title: "",
         artist: isSameArtist ? firstArtist : "",
         album: isSameAlbum ? firstAlbum : "",
         genre: isSameGenre ? firstGenre : "",
@@ -285,7 +291,6 @@ export default function App() {
     setIsEditing(true);
   };
 
-  // タグ保存実行
   const handleSaveTags = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingTracks.length === 0) return;
@@ -310,7 +315,6 @@ export default function App() {
         });
       }
 
-      // 画面更新
       await loadTracks();
       setIsEditing(false);
       setEditingTracks([]);
@@ -346,10 +350,8 @@ export default function App() {
     }
   };
 
-  // セミコロン区切りの先頭ジャンルを取得する関数
   const getPrimaryGenre = (genreStr: string) => {
     if (!genreStr) return "";
-    // セミコロン（半角・全角両対応）で分割し、先頭の余白を除去して取得
     const parts = genreStr.split(/[;；]/);
     return parts[0]?.trim() || "";
   };
@@ -418,14 +420,14 @@ export default function App() {
           {isScanning ? "スキャン中..." : "スキャン"}
         </button>
         <span style={{ fontSize: "12px", color: "#888" }}>
-          {selectedAlbum ? `${selectedAlbum} (${filteredTracks.length} 曲)` : "0 トラック"}
+          {selectedKey ? `${selectedKey} (${filteredTracks.length} 曲)` : "0 トラック"}
           {selectedIds.size > 0 && ` [${selectedIds.size} 件選択中]`}
         </span>
       </div>
 
       {/* 2. メイン領域 */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-        {/* 左ペイン: アルバム一覧 */}
+        {/* 左ペイン: 切り替え対応一覧 */}
         <div
           style={{
             width: "220px",
@@ -435,31 +437,101 @@ export default function App() {
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
+            position: "relative",
           }}
         >
+          {/* ペインヘッダー（MusicBee風 ドロップダウン切り替え） */}
           <div
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsViewMenuOpen((prev) => !prev);
+            }}
             style={{
               padding: "6px 12px",
               background: "#222222",
               borderBottom: "1px solid #2d2d2d",
               fontSize: "11px",
               fontWeight: "bold",
-              color: "#888",
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
+              color: "#aaa",
+              cursor: "pointer",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              userSelect: "none",
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a2d2e")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "#222222")}
           >
-            アルバム ({albumList.length})
+            <span>
+              {viewMode === "artist" ? "アーティスト" : "アルバム"} ({paneItems.length})
+            </span>
+            <span style={{ fontSize: "9px", color: "#777" }}>▾</span>
           </div>
 
+          {/* 切り替えドロップダウンメニュー */}
+          {isViewMenuOpen && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                top: "28px",
+                left: "8px",
+                background: "#252526",
+                border: "1px solid #454545",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.6)",
+                borderRadius: "4px",
+                zIndex: 1100,
+                padding: "4px 0",
+                minWidth: "140px",
+                fontSize: "12px",
+              }}
+            >
+              <div
+                onClick={() => {
+                  setViewMode("artist");
+                  setIsViewMenuOpen(false);
+                  setSelectedIds(new Set());
+                }}
+                style={{
+                  padding: "6px 14px",
+                  cursor: "pointer",
+                  color: viewMode === "artist" ? "#569cd6" : "#eee",
+                  fontWeight: viewMode === "artist" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {viewMode === "artist" ? "✓ アーティスト" : " アーティスト"}
+              </div>
+              <div
+                onClick={() => {
+                  setViewMode("album");
+                  setIsViewMenuOpen(false);
+                  setSelectedIds(new Set());
+                }}
+                style={{
+                  padding: "6px 14px",
+                  cursor: "pointer",
+                  color: viewMode === "album" ? "#569cd6" : "#eee",
+                  fontWeight: viewMode === "album" ? "bold" : "normal",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#094771")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {viewMode === "album" ? "✓ アルバム" : " アルバム"}
+              </div>
+            </div>
+          )}
+
+          {/* アイテムリスト */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-            {albumList.map((item) => {
-              const isSelected = selectedAlbum === item.name;
+            {paneItems.map((item) => {
+              const isSelected = selectedKey === item.name;
               return (
                 <div
                   key={item.name}
                   onClick={() => {
-                    setSelectedAlbum(item.name);
+                    setSelectedKey(item.name);
                     setSelectedIds(new Set());
                     setLastSelectedIndex(null);
                   }}
@@ -607,7 +679,7 @@ export default function App() {
                       {track.album}
                     </div>
                     <div
-                      title={track.genre} /* マウスを乗せると「Rock; Pop」と全ジャンルがポップアップ表示 */
+                      title={track.genre}
                       style={{
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -813,7 +885,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 5. タグ編集モーダルウィンドウ（単一 / 一括対応） */}
+      {/* 5. タグ編集モーダルウィンドウ */}
       {isEditing && (
         <div
           style={{
@@ -866,7 +938,6 @@ export default function App() {
               onSubmit={handleSaveTags}
               style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}
             >
-              {/* タイトル入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>
                   タイトル {editingTracks.length > 1 && "(複数選択時は変更不可)"}
@@ -888,7 +959,6 @@ export default function App() {
                 />
               </div>
 
-              {/* アーティスト入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>
                   アーティスト {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
@@ -909,7 +979,6 @@ export default function App() {
                 />
               </div>
 
-              {/* アルバム入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>
                   アルバム {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
@@ -930,7 +999,6 @@ export default function App() {
                 />
               </div>
 
-              {/* ジャンル入力欄 */}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 <label style={{ fontSize: "11px", color: "#aaa" }}>
                   ジャンル (複数時はセミコロン「;」区切り) {editingTracks.length > 1 && "(空欄の場合は現状維持)"}
